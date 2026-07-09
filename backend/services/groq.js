@@ -169,6 +169,8 @@ RULES - MANDATORY:
 - Preserve the SR No exactly as printed even if numbering does not start at 1 - do not renumber rows.
 - Amount/Basic fields contain only digits, commas, and decimal point.
 - CGST/SGST/IGST rows may show "0.00" as a genuine printed value - keep it as "0.00", do not convert to null.
+- NEVER invent a line item to fill a gap. A genuine row needs a real, readable Description - if you cannot read a plausible item description for a row (e.g. all you have is a stray number, a fragment like "2 S---", or noise), DO NOT add it to lineItems at all. An incomplete-but-real row (missing only Basic/Quantity) is fine to include with those fields null; a row you cannot actually read is not - omit it entirely.
+- NEVER pull a value from the CGST/SGST/IGST/Total Basic Amount/Total Amount footer into a line item's Basic/Amount field. Footer totals and per-row amounts are different numbers from different parts of the text - do not cross-assign between them.
 ${PRINTED_ONLY_RULE}
 
 NULL RULES:
@@ -326,6 +328,11 @@ function buildPart2Tables(parsed) {
     })
   }
 
+  // Always show every tax/total row, even when unread - dropping a null CGST/SGST/IGST
+  // row silently made the "Taxes" view look like it only ever extracts monetary
+  // totals (no tax fields), when really the tax rows were just hidden, not missing
+  // from the schema. "Not available" makes an extraction gap visible instead of
+  // making it look like tax fields were never a thing this pipeline extracts.
   const totals = parsed.totals || {}
   const totalRows = [
     ['Total Basic Amount', totals.totalBasicAmount],
@@ -333,19 +340,15 @@ function buildPart2Tables(parsed) {
     ['SGST', totals.sgst],
     ['IGST', totals.igst],
     ['Total Amount', totals.totalAmount],
-  ]
-    .filter(([, value]) => value !== undefined && value !== null && value !== '')
-    .map(([Field, Value]) => ({ Field, Value: String(Value) }))
+  ].map(([Field, Value]) => ({ Field, Value: formatValue(Value) }))
 
-  if (totalRows.length) {
-    tables.push({
-      title: 'Totals',
-      confidence: 'medium',
-      columns: ['Field', 'Value'],
-      rows: totalRows,
-      sourceHint: 'Line-items table tax/total footer',
-    })
-  }
+  tables.push({
+    title: 'Totals',
+    confidence: 'medium',
+    columns: ['Field', 'Value'],
+    rows: totalRows,
+    sourceHint: 'Line-items table tax/total footer',
+  })
 
   return tables
 }
@@ -353,15 +356,29 @@ function buildPart2Tables(parsed) {
 // Flat field entries for Totals + Line Items so the existing field-correction
 // endpoint (PATCH /documents/:id/fields/:fieldKey/correct) can edit them the
 // same way it already edits Part 1 header fields - no new save logic needed.
+// Unlike addField, always creates the field even when the value is null - used
+// for the fixed set of tax/total rows so they stay editable (fillable by hand)
+// even when the AI couldn't read them, instead of the field just not existing.
+function addFieldAlways(fields, label, value, category = 'other') {
+  fields.push({
+    label,
+    normalizedKey: normalizeKey(label),
+    value: value === undefined || value === null || value === '' ? null : String(value),
+    category,
+    confidence: 'medium',
+    sourceLine: '',
+  })
+}
+
 function buildPart2Fields(parsed) {
   const fields = []
   const totals = parsed.totals || {}
 
-  addField(fields, 'Total Basic Amount', totals.totalBasicAmount, 'amount')
-  addField(fields, 'CGST', totals.cgst, 'tax')
-  addField(fields, 'SGST', totals.sgst, 'tax')
-  addField(fields, 'IGST', totals.igst, 'tax')
-  addField(fields, 'Total Amount', totals.totalAmount, 'amount')
+  addFieldAlways(fields, 'Total Basic Amount', totals.totalBasicAmount, 'amount')
+  addFieldAlways(fields, 'CGST', totals.cgst, 'tax')
+  addFieldAlways(fields, 'SGST', totals.sgst, 'tax')
+  addFieldAlways(fields, 'IGST', totals.igst, 'tax')
+  addFieldAlways(fields, 'Total Amount', totals.totalAmount, 'amount')
 
   const items = Array.isArray(parsed.lineItems) ? parsed.lineItems : []
   items.forEach((item, i) => {
@@ -433,6 +450,33 @@ function buildCombinedTables(part1Parsed, part2Parsed) {
   ]
 }
 
+// Backend safety net: drop any line item the AI produced that doesn't hold up as
+// a real row, regardless of what the prompt asked for. A genuine row always has
+// a readable description with real words in it; a hallucinated/misparsed row
+// (e.g. a stray footer number attached to noise like "2 S---") does not.
+function isGarbageLineItem(item) {
+  const desc = (item?.description || '').trim()
+  const letters = (desc.match(/[a-zA-Z]/g) || []).length
+  if (letters < 3) return true
+  // A row with no HSN/SAC, no quantity, and no basic amount alongside a near-empty
+  // description is almost always a misattributed footer value, not a real item.
+  if (!item.hsnSac && !item.quantity && !item.basic && letters < 6) return true
+  return false
+}
+
+function sanitizeLineItems(lineItems, warnings) {
+  const items = Array.isArray(lineItems) ? lineItems : []
+  const kept = []
+  for (const item of items) {
+    if (isGarbageLineItem(item)) {
+      warnings.push(`Dropped an unreadable/garbled line item row (SR ${item?.srNo ?? 'unknown'}) rather than showing incorrect data.`)
+      continue
+    }
+    kept.push(item)
+  }
+  return kept
+}
+
 async function analyzeDocument({ part1Text, part2Text }) {
   const [part1Parsed, part2Parsed] = await Promise.all([
     part1Text ? runExtraction(PART1_SYSTEM, part1Text, 'consignee/consignor header') : Promise.resolve({}),
@@ -443,6 +487,8 @@ async function analyzeDocument({ part1Text, part2Text }) {
     ...(Array.isArray(part1Parsed.warnings) ? part1Parsed.warnings : []),
     ...(Array.isArray(part2Parsed.warnings) ? part2Parsed.warnings : []),
   ]
+
+  part2Parsed.lineItems = sanitizeLineItems(part2Parsed.lineItems, warnings)
 
   // Header metadata usually comes from Part 1, but the automatic page split can
   // occasionally place a line or two on the Part 2 side - fall back to Part 2's
@@ -520,7 +566,7 @@ ${summaryPoints.length ? summaryPoints.map((p, i) => `${i + 1}. ${p}`).join('\n'
 
 === EXTRACTED FIELDS ===
 ${fields.length
-    ? fields.map(f => `${f.label}: ${f.correctedValue ?? f.value ?? 'N/A'} [${f.category || 'other'}]`).join('\n')
+    ? fields.map(f => `${f.label}: ${f.value ?? 'N/A'} [${f.category || 'other'}]`).join('\n')
     : 'None'}
 
 === EXTRACTED TABLES ===

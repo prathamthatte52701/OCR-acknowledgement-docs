@@ -119,6 +119,9 @@ async function run() {
 
     const splitY = await findSplitY(worker, grayBuffer, pageHeight)
     const padding = Math.round(pageHeight * 0.01)
+    // Part 2's top edge gets extra buffer (vs Part 1's bottom edge) so a slightly
+    // late split anchor can't clip the first item row out of the crop entirely.
+    const part2TopPadding = Math.round(pageHeight * 0.025)
 
     async function cropBoth(top, height) {
       const bin = await sharp(enhancedBuffer).extract({ left: 0, top, width: pageWidth, height }).toBuffer()
@@ -127,7 +130,7 @@ async function run() {
     }
 
     const part1Crops = await cropBoth(0, Math.max(1, splitY + padding))
-    const part2Top = Math.max(0, splitY - padding)
+    const part2Top = Math.max(0, splitY - part2TopPadding)
     const part2Crops = await cropBoth(part2Top, pageHeight - part2Top)
 
     async function ocrPart({ bin, gray }, label) {
@@ -152,11 +155,16 @@ async function run() {
       return { text: cleanOCRText(winner.result.text), strategy: winner.label }
     }
 
-    // Verify part2 actually contains table content - if not, re-split using fallback ratio
+    // Verify part2 actually contains ITEM ROWS, not just the totals footer - if not,
+    // re-split using fallback ratio. A loose keyword check (e.g. "Amount"/"Total")
+    // is NOT enough: "Total Basic Amount" / "IGST ... Amount" lines alone would
+    // satisfy it even when every item row was missed, silently hiding the failure.
+    // Every real item row carries a 6-digit HSN/SAC code (e.g. 998729) - require
+    // that as concrete evidence at least one row was actually captured.
     let part1Ocr = await ocrPart(part1Crops, 'part1')
     let part2Ocr = await ocrPart(part2Crops, 'part2')
 
-    const looksLikeTable = /SR\s*NO|DESCRIPTION|HSN|AMOUNT|QUANTITY/i.test(part2Ocr.text)
+    const looksLikeTable = /\b\d{6}\b/.test(part2Ocr.text) && /SR\s*NO|DESCRIPTION|HSN|QUANTITY/i.test(part2Ocr.text)
     if (!looksLikeTable) {
       const fallbackY = Math.round(pageHeight * 0.46)
       const fallbackPart2Crops = await cropBoth(fallbackY, pageHeight - fallbackY)

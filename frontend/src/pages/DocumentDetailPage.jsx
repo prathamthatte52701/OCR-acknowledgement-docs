@@ -1,9 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import api from '../utils/api'
-import SummaryCard from '../components/SummaryCard'
-import ExtractedFieldsTable from '../components/ExtractedFieldsTable'
-import ExtractedTablesView from '../components/ExtractedTablesView'
+import { DetailView } from '../components/DocumentDetailsPanel'
 import CorrectionModal from '../components/CorrectionModal'
 import LoadingState from '../components/LoadingState'
 import ErrorMessage from '../components/ErrorMessage'
@@ -29,7 +27,7 @@ export default function DocumentDetailPage() {
   const [doc, setDoc] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [activeTab, setActiveTab] = useState('summary')
+  const [activeTab, setActiveTab] = useState('part1')
   const [correctionField, setCorrectionField] = useState(null)
   const [reprocessing, setReprocessing] = useState(false)
   const [reprocessMsg, setReprocessMsg] = useState('')
@@ -68,7 +66,7 @@ export default function DocumentDetailPage() {
       await api.patch(`/documents/${id}/fields/${field.normalizedKey}/correct`, {
         fieldLabel: field.label,
         fieldKey: field.normalizedKey,
-        oldValue: field.correctedValue ?? field.value,
+        oldValue: field.value,
         newValue,
       })
       setCorrectionField(null)
@@ -120,11 +118,8 @@ export default function DocumentDetailPage() {
   }[doc.uploadStatus] || 'text-gray-400 bg-gray-800 border-gray-700'
 
   const tabs = [
-    { id: 'summary', label: 'Combined Summary' },
-    { id: 'fields', label: 'Fields' },
-    { id: 'tables', label: 'Tables' },
-    { id: 'part1', label: 'Part 1 - Header' },
-    { id: 'part2', label: 'Part 2 - Line Items' },
+    { id: 'part1', label: 'Part 1' },
+    { id: 'part2', label: 'Part 2' },
   ]
 
   return (
@@ -230,43 +225,28 @@ export default function DocumentDetailPage() {
             ))}
           </div>
 
-          {activeTab === 'summary' && (
-            <SummaryCard
-              fullSummary={doc.fullSummary}
-              summaryPoints={doc.summaryPoints}
-              fields={doc.extractedFields}
-              onCorrect={(field) => setCorrectionField(field)}
-            />
-          )}
-          {activeTab === 'fields' && (
-            <ExtractedFieldsTable
-              fields={doc.extractedFields}
-              onCorrect={(field) => setCorrectionField(field)}
-            />
-          )}
-          {activeTab === 'tables' && (
-            <ExtractedTablesView
-              tables={doc.extractedTables}
-              fields={doc.extractedFields}
-              onCorrect={(field) => setCorrectionField(field)}
-            />
-          )}
           {activeTab === 'part1' && (
-            <div className="space-y-4">
+            <div className="space-y-5">
               <div className="bg-blue-900/10 border border-blue-800/40 rounded-xl p-3 text-[12.6px] text-blue-300/80">
-                Part 1 is the upper section of the page: Consignee and Consignor header table.
+                Part 1 - the upper section of the page: Consignee and Consignor header details.
               </div>
-              <SummaryCard fullSummary={doc.part1?.summary} summaryPoints={[]} fields={doc.part1?.fields} onCorrect={(field) => setCorrectionField(field)} />
-              <ExtractedFieldsTable fields={doc.part1?.fields} onCorrect={(field) => setCorrectionField(field)} />
+              <div>
+                <h3 className="text-gray-300 font-semibold mb-2">Consignee</h3>
+                <DetailView type="consignee" doc={doc} onCorrect={(field) => setCorrectionField(field)} />
+              </div>
+              <div>
+                <h3 className="text-gray-300 font-semibold mb-2">Consignor</h3>
+                <DetailView type="consigner" doc={doc} onCorrect={(field) => setCorrectionField(field)} />
+              </div>
             </div>
           )}
           {activeTab === 'part2' && (
             <div className="space-y-4">
               <div className="bg-blue-900/10 border border-blue-800/40 rounded-xl p-3 text-[12.6px] text-blue-300/80">
-                Part 2 is the lower section of the page: line-items and GST tax totals table.
+                Part 2 - the lower section of the page: Uncoded RGP line-items and GST tax totals table.
               </div>
-              <SummaryCard fullSummary={doc.part2?.summary} summaryPoints={[]} fields={[]} onCorrect={null} />
-              <ExtractedTablesView tables={doc.part2?.tables} fields={[]} onCorrect={null} />
+              <h3 className="text-gray-300 font-semibold">Uncoded RGP</h3>
+              <DetailView type="items" doc={doc} onCorrect={(field) => setCorrectionField(field)} />
             </div>
           )}
         </>

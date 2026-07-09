@@ -4,7 +4,7 @@ const fieldSchema = new mongoose.Schema({
   label: String,
   normalizedKey: String,
   value: String,
-  correctedValue: String,
+  edited: { type: Boolean, default: false },
   category: String,
   confidence: { type: String, enum: ['high', 'medium', 'low'] },
   sourceLine: String,

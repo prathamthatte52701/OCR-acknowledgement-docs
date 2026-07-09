@@ -56,8 +56,8 @@ export default function ExtractedFieldsTable({ fields, onCorrect }) {
         </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
+        <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-gray-800 bg-gray-900/50">
               <th className="text-left px-4 py-2.5 text-gray-500 font-medium">Field</th>
@@ -77,9 +77,9 @@ export default function ExtractedFieldsTable({ fields, onCorrect }) {
                 </td>
                 <td className="px-4 py-3">
                   <span className={`font-mono text-sm ${field.value ? 'text-white' : 'text-gray-600 italic'}`}>
-                    {field.correctedValue ?? field.value ?? 'N/A'}
+                    {field.value ?? 'N/A'}
                   </span>
-                  {field.correctedValue && field.correctedValue !== field.value && (
+                  {field.edited && (
                     <span className="ml-2 text-xs text-amber-400">(edited)</span>
                   )}
                 </td>

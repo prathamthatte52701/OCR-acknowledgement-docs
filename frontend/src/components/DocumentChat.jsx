@@ -3,7 +3,7 @@ import ChatMessageBubble from './ChatMessageBubble'
 import DocumentDetailsPanel from './DocumentDetailsPanel'
 import LoadingState from './LoadingState'
 
-export default function DocumentChat({ messages, onSendMessage, loading, externalSending = false, doc, onRate, onCorrect }) {
+export default function DocumentChat({ messages, onSendMessage, loading, externalSending = false, doc, onRate, onCorrect, onDetailAction }) {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const messagesRef = useRef(null)
@@ -42,7 +42,7 @@ export default function DocumentChat({ messages, onSendMessage, loading, externa
           </div>
         ) : (
           messages.map((msg, i) => (
-            <ChatMessageBubble key={msg._id || i} message={msg} onRate={onRate} />
+            <ChatMessageBubble key={msg._id || msg._localId || i} message={msg} onRate={onRate} doc={doc} onCorrect={onCorrect} />
           ))
         )}
 
@@ -63,7 +63,7 @@ export default function DocumentChat({ messages, onSendMessage, loading, externa
         )}
       </div>
 
-      <DocumentDetailsPanel doc={doc} onCorrect={onCorrect} />
+      <DocumentDetailsPanel doc={doc} onSelect={onDetailAction} />
 
       <div className="border-t border-blue-300/12 bg-slate-950/82 px-4 py-3">
         <div className="flex items-end gap-2 rounded-2xl border border-blue-300/20 bg-slate-900/70 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_16px_42px_rgba(2,8,23,0.28)] transition-colors focus-within:border-blue-300/55">

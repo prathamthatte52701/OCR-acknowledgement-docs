@@ -50,7 +50,9 @@ export default function ExtractedTablesView({ tables, fields, onCorrect }) {
 
   return (
     <div className="space-y-4">
-      {tables.map((table, ti) => (
+      {tables.map((table, ti) => {
+        const isUncodedRgp = table.title === 'Line Items' || table.title === 'Totals'
+        return (
         <div key={ti} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <h3 className="text-gray-300 font-semibold flex items-center gap-2">
@@ -61,12 +63,12 @@ export default function ExtractedTablesView({ tables, fields, onCorrect }) {
           {table.sourceHint && (
             <p className="px-4 py-2 text-xs text-gray-600 border-b border-gray-800">{table.sourceHint}</p>
           )}
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
+            <table className="min-w-full text-sm">
               <thead>
                 <tr className="bg-gray-800/50">
                   {(table.columns || []).map((col, ci) => (
-                    <th key={ci} className="text-left px-4 py-2.5 text-gray-400 font-medium whitespace-nowrap border-b border-gray-800">
+                    <th key={ci} className={`text-left px-4 py-2.5 text-gray-400 font-medium whitespace-nowrap border-b border-gray-800 ${isUncodedRgp && ci > 0 ? 'border-l border-l-gray-600' : ''}`}>
                       {col}
                     </th>
                   ))}
@@ -78,12 +80,11 @@ export default function ExtractedTablesView({ tables, fields, onCorrect }) {
                   <tr key={ri} className="border-b border-gray-800/50 hover:bg-gray-800/20">
                     {(table.columns || []).map((col, ci) => {
                       const cellField = findFieldForCell(table.title, row, col, fieldsByLabel, ri)
-                      const displayVal = cellField?.correctedValue ?? row[col] ?? '-'
-                      const isEdited = cellField?.correctedValue && cellField.correctedValue !== cellField.value
+                      const displayVal = cellField?.value ?? row[col] ?? '-'
                       return (
-                        <td key={ci} className="px-4 py-2.5 text-gray-300 whitespace-nowrap">
+                        <td key={ci} className={`px-4 py-2.5 text-gray-300 whitespace-nowrap ${isUncodedRgp && ci > 0 ? 'border-l border-l-gray-600' : ''}`}>
                           {displayVal}
-                          {isEdited && <span className="ml-1.5 text-xs text-amber-400">(edited)</span>}
+                          {cellField?.edited && <span className="ml-1.5 text-xs text-amber-400">(edited)</span>}
                         </td>
                       )
                     })}
@@ -118,7 +119,8 @@ export default function ExtractedTablesView({ tables, fields, onCorrect }) {
             </table>
           </div>
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }

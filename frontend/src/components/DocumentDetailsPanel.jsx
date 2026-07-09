@@ -1,14 +1,14 @@
-import { useState } from 'react'
 import SummaryCard from './SummaryCard'
 import ExtractedFieldsTable from './ExtractedFieldsTable'
 import ExtractedTablesView from './ExtractedTablesView'
 
-const VIEWS = [
+const DETAIL_VIEWS = [
   { id: 'summary', label: 'Full Summary' },
   { id: 'about', label: 'About' },
   { id: 'consignee', label: 'Consignee Details' },
   { id: 'consigner', label: 'Consigner Details' },
-  { id: 'items', label: 'Items & Tax' },
+  { id: 'items', label: 'Uncoded RGP' },
+  { id: 'taxes', label: 'Taxes' },
 ]
 
 function formatDateTime(dateStr) {
@@ -62,61 +62,60 @@ function filterFields(fields, prefix, extraKeys) {
   )
 }
 
-export default function DocumentDetailsPanel({ doc, onCorrect }) {
-  const [activeView, setActiveView] = useState(null)
-
-  if (!doc || doc.uploadStatus !== 'processed') return null
-
+// Renders the content for one detail view. Always reads live from `doc`, so
+// every appended chat entry (past or present) reflects the current field
+// values - there's no separate stale snapshot to fall out of sync.
+export function DetailView({ type, doc, onCorrect }) {
+  if (!doc) return null
   const fields = doc.extractedFields || []
-  const consigneeFields = filterFields(fields, 'consignee_', CONSIGNEE_EXTRA_KEYS)
-  const consignerFields = filterFields(fields, 'consignor_', CONSIGNER_EXTRA_KEYS)
-  const itemsAndTaxTables = (doc.extractedTables || []).filter(t => t.title === 'Line Items' || t.title === 'Totals')
 
-  function toggle(id) {
-    setActiveView(prev => (prev === id ? null : id))
+  if (type === 'summary') {
+    return (
+      <SummaryCard
+        fullSummary={doc.fullSummary}
+        summaryPoints={doc.summaryPoints}
+        fields={fields}
+        onCorrect={onCorrect}
+      />
+    )
   }
+  if (type === 'about') return <AboutView doc={doc} />
+  if (type === 'consignee') {
+    return <ExtractedFieldsTable fields={filterFields(fields, 'consignee_', CONSIGNEE_EXTRA_KEYS)} onCorrect={onCorrect} />
+  }
+  if (type === 'consigner') {
+    return <ExtractedFieldsTable fields={filterFields(fields, 'consignor_', CONSIGNER_EXTRA_KEYS)} onCorrect={onCorrect} />
+  }
+  if (type === 'items') {
+    const itemsAndTaxTables = (doc.extractedTables || []).filter(t => t.title === 'Line Items' || t.title === 'Totals')
+    return <ExtractedTablesView tables={itemsAndTaxTables} fields={fields} onCorrect={onCorrect} />
+  }
+  if (type === 'taxes') {
+    const taxTables = (doc.extractedTables || []).filter(t => t.title === 'Totals')
+    return <ExtractedTablesView tables={taxTables} fields={fields} onCorrect={onCorrect} />
+  }
+  return null
+}
+
+// Button row only - clicking a button no longer toggles content inline here;
+// the parent appends the result to the chat history instead (see onSelect).
+export default function DocumentDetailsPanel({ doc, onSelect }) {
+  if (!doc || doc.uploadStatus !== 'processed') return null
 
   return (
     <div className="border-t border-blue-300/12 bg-slate-950/68">
       <div className="flex flex-wrap gap-2 px-4 py-3">
-        {VIEWS.map(v => (
+        {DETAIL_VIEWS.map(v => (
           <button
             key={v.id}
             type="button"
-            onClick={() => toggle(v.id)}
-            className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-[12.6px] font-semibold transition-all ${
-              activeView === v.id
-                ? 'border-blue-400/50 bg-blue-500/20 text-blue-100'
-                : 'border-blue-300/14 bg-slate-900/70 text-blue-100/75 hover:border-blue-300/38 hover:bg-blue-500/10 hover:text-blue-100'
-            }`}
+            onClick={() => onSelect(v.id, v.label)}
+            className="inline-flex shrink-0 items-center gap-2 rounded-full border border-blue-300/14 bg-slate-900/70 px-3 py-2 text-[12.6px] font-semibold text-blue-100/75 transition-all hover:border-blue-300/38 hover:bg-blue-500/10 hover:text-blue-100"
           >
             {v.label}
           </button>
         ))}
       </div>
-
-      {activeView && (
-        <div className="max-h-[420px] overflow-y-auto border-t border-blue-300/10 px-4 py-4">
-          {activeView === 'summary' && (
-            <SummaryCard
-              fullSummary={doc.fullSummary}
-              summaryPoints={doc.summaryPoints}
-              fields={fields}
-              onCorrect={onCorrect}
-            />
-          )}
-          {activeView === 'about' && <AboutView doc={doc} />}
-          {activeView === 'consignee' && (
-            <ExtractedFieldsTable fields={consigneeFields} onCorrect={onCorrect} />
-          )}
-          {activeView === 'consigner' && (
-            <ExtractedFieldsTable fields={consignerFields} onCorrect={onCorrect} />
-          )}
-          {activeView === 'items' && (
-            <ExtractedTablesView tables={itemsAndTaxTables} fields={fields} onCorrect={onCorrect} />
-          )}
-        </div>
-      )}
     </div>
   )
 }

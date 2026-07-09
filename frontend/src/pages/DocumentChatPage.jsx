@@ -271,7 +271,7 @@ export default function DocumentChatPage() {
       await api.patch(`/documents/${id}/fields/${field.normalizedKey}/correct`, {
         fieldLabel: field.label,
         fieldKey: field.normalizedKey,
-        oldValue: field.correctedValue ?? field.value,
+        oldValue: field.value,
         newValue,
       })
       setCorrectionField(null)
@@ -280,6 +280,21 @@ export default function DocumentChatPage() {
     } catch {
       alert('Failed to save correction.')
     }
+  }
+
+  // Detail-view buttons (Full Summary, About, Consignee, Consigner, Uncoded RGP)
+  // append to the chat log like a real conversation instead of replacing a single
+  // panel - nothing disappears when another button is clicked. These render
+  // locally from the current `doc` state (no AI call), so they always show
+  // live data, including any edits made after they were added to the history.
+  function handleDetailAction(detailType, label) {
+    const now = new Date().toISOString()
+    const base = Date.now()
+    setMessages(prev => [
+      ...prev,
+      { role: 'user', message: label, createdAt: now, _localId: `${base}-u` },
+      { role: 'assistant', kind: 'detail', detailType, message: '', createdAt: now, _localId: `${base}-a` },
+    ])
   }
 
   if (loading) return <PageLoadingState />
@@ -348,6 +363,7 @@ export default function DocumentChatPage() {
                 doc={doc}
                 onRate={handleRate}
                 onCorrect={(field) => setCorrectionField(field)}
+                onDetailAction={handleDetailAction}
               />
             </div>
           )}

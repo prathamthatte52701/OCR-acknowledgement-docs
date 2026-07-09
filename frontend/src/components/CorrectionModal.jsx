@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 export default function CorrectionModal({ field, onSave, onClose }) {
-  const [value, setValue] = useState(field?.correctedValue ?? field?.value ?? '')
+  const [value, setValue] = useState(field?.value ?? '')
   const [saving, setSaving] = useState(false)
 
   if (!field) return null

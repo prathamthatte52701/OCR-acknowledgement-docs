@@ -427,15 +427,35 @@ router.patch('/:id/fields/:fieldKey/correct', async (req, res) => {
     const fieldIndex = doc.extractedFields.findIndex(f => f.normalizedKey === req.params.fieldKey)
     if (fieldIndex === -1) return res.status(404).json({ error: 'Field not found.' })
 
-    doc.extractedFields[fieldIndex].correctedValue = newValue.trim()
+    const trimmedValue = newValue.trim()
+    const priorValue = doc.extractedFields[fieldIndex].value
+
+    // Single source of truth: the edited value overwrites the field permanently -
+    // there is no separate "AI value" vs "edited value" anywhere. Sync every
+    // stored copy of this field (main list + Part 1/Part 2 snapshots) so the
+    // edit is reflected everywhere immediately and survives a refresh.
+    doc.extractedFields[fieldIndex].value = trimmedValue
+    doc.extractedFields[fieldIndex].edited = true
+
+    const syncCopy = (fieldsArray) => {
+      if (!fieldsArray) return
+      const idx = fieldsArray.findIndex(f => f.normalizedKey === req.params.fieldKey)
+      if (idx !== -1) {
+        fieldsArray[idx].value = trimmedValue
+        fieldsArray[idx].edited = true
+      }
+    }
+    syncCopy(doc.part1?.fields)
+    syncCopy(doc.part2?.fields)
+
     await doc.save()
 
     await Correction.create({
       documentId: doc._id,
       fieldLabel: fieldLabel || doc.extractedFields[fieldIndex].label,
       fieldKey: req.params.fieldKey,
-      oldValue: oldValue ?? doc.extractedFields[fieldIndex].value,
-      newValue: newValue.trim(),
+      oldValue: oldValue ?? priorValue,
+      newValue: trimmedValue,
       correctedAt: new Date(),
     })
 

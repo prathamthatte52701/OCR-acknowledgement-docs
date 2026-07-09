@@ -51,13 +51,12 @@ export default function SummaryCard({ fullSummary, summaryPoints, fields, onCorr
         const label = trimmed.slice(0, colonIdx).trim()
         const value = trimmed.slice(colonIdx + 1).trim()
         const field = fieldsByLabel[label.toLowerCase()]
-        const displayValue = field?.correctedValue ?? value
-        const isEdited = field?.correctedValue && field.correctedValue !== field.value
+        const displayValue = field?.value ?? value
         return (
           <div key={i} className="flex gap-2 text-sm leading-relaxed items-center group">
             <span className="text-gray-500 flex-shrink-0 min-w-[120px]">{label}:</span>
             <span className="text-gray-200">{displayValue}</span>
-            {isEdited && <span className="text-xs text-amber-400">(edited)</span>}
+            {field?.edited && <span className="text-xs text-amber-400">(edited)</span>}
             {field && onCorrect && (
               <button
                 onClick={() => onCorrect(field)}
