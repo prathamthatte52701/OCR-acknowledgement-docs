@@ -268,26 +268,28 @@ function formatValue(value) {
 
 function buildPart1Fields(parsed) {
   const fields = []
-  addField(fields, 'Invoice No', parsed.invoiceNo, 'id')
-  addField(fields, 'FI Doc', parsed.fiDoc, 'id')
-  addField(fields, 'Challan Date', parsed.challanDate, 'date')
-  addField(fields, 'Reason', parsed.reason, 'other')
-  addField(fields, 'PO No', parsed.poNo, 'id')
-  addField(fields, 'Request No', parsed.requestNo, 'id')
-  addField(fields, 'IRN No', parsed.irnNo, 'id')
+  // addFieldAlways (not addField) so a null/"Not Available" value still gets a
+  // field entry - otherwise the row (and its Edit button) doesn't exist at all.
+  addFieldAlways(fields, 'Invoice No', parsed.invoiceNo, 'id')
+  addFieldAlways(fields, 'FI Doc', parsed.fiDoc, 'id')
+  addFieldAlways(fields, 'Challan Date', parsed.challanDate, 'date')
+  addFieldAlways(fields, 'Reason', parsed.reason, 'other')
+  addFieldAlways(fields, 'PO No', parsed.poNo, 'id')
+  addFieldAlways(fields, 'Request No', parsed.requestNo, 'id')
+  addFieldAlways(fields, 'IRN No', parsed.irnNo, 'id')
 
-  addField(fields, 'Consignee Code', parsed.consignee?.code, 'id')
-  addField(fields, 'Consignee Name', parsed.consignee?.name, 'name')
-  addField(fields, 'Consignee Address', parsed.consignee?.address, 'address')
-  addField(fields, 'Consignee State', parsed.consignee?.stateName, 'address')
-  addField(fields, 'Consignee GSTIN', parsed.consignee?.gstin, 'gst')
-  addField(fields, 'Consignee PAN', parsed.consignee?.pan, 'id')
+  addFieldAlways(fields, 'Consignee Code', parsed.consignee?.code, 'id')
+  addFieldAlways(fields, 'Consignee Name', parsed.consignee?.name, 'name')
+  addFieldAlways(fields, 'Consignee Address', parsed.consignee?.address, 'address')
+  addFieldAlways(fields, 'Consignee State', parsed.consignee?.stateName, 'address')
+  addFieldAlways(fields, 'Consignee GSTIN', parsed.consignee?.gstin, 'gst')
+  addFieldAlways(fields, 'Consignee PAN', parsed.consignee?.pan, 'id')
 
-  addField(fields, 'Consignor Name', parsed.consignor?.name, 'name')
-  addField(fields, 'Consignor Address', parsed.consignor?.address, 'address')
-  addField(fields, 'Consignor State', parsed.consignor?.stateName, 'address')
-  addField(fields, 'Consignor GSTIN', parsed.consignor?.gstin, 'gst')
-  addField(fields, 'Consignor PAN', parsed.consignor?.pan, 'id')
+  addFieldAlways(fields, 'Consignor Name', parsed.consignor?.name, 'name')
+  addFieldAlways(fields, 'Consignor Address', parsed.consignor?.address, 'address')
+  addFieldAlways(fields, 'Consignor State', parsed.consignor?.stateName, 'address')
+  addFieldAlways(fields, 'Consignor GSTIN', parsed.consignor?.gstin, 'gst')
+  addFieldAlways(fields, 'Consignor PAN', parsed.consignor?.pan, 'id')
 
   return fields
 }
@@ -637,6 +639,36 @@ function applyConsignorAddressRule(consignor, part1Text, warnings) {
   return { ...consignor, address: canonicalAddress }
 }
 
+// PO No is the other large source of extraction error: for digital PDFs,
+// pdf-parse returns text in content-stream order rather than visual reading
+// order, so the "PO No." label and its number can end up separated by dozens
+// of unrelated tokens - the AI then either grabs the wrong nearby digit string
+// (an HSN/SAC code, a line-item description) or correctly gives up (null).
+// Every real PO No on this template is a 10-digit number starting "3242", so
+// verify/recover it deterministically from the raw text instead of trusting
+// label-adjacency parsing alone.
+const PO_NO_PATTERN = /\b3242\d{6}\b/
+
+function applyPoNoRule(poNo, part1Text, warnings) {
+  const matchInText = (part1Text || '').match(PO_NO_PATTERN)?.[0] || null
+  const currentIsValid = typeof poNo === 'string' && PO_NO_PATTERN.test(poNo)
+
+  if (currentIsValid) return poNo
+
+  if (matchInText) {
+    if (poNo && poNo !== matchInText) {
+      warnings.push(`PO No corrected from AI-extracted "${poNo}" (did not match the expected 3242-prefixed format) to "${matchInText}" found in the source text (deterministic rule).`)
+    } else if (!poNo) {
+      warnings.push(`PO No recovered as "${matchInText}" via deterministic pattern match (AI extraction returned null).`)
+    }
+    return matchInText
+  }
+
+  // No 3242-prefixed number anywhere in the text - leave as-is (including null),
+  // never fabricate a value that isn't actually present in the source.
+  return poNo
+}
+
 async function analyzeDocument({ part1Text, part2Text }) {
   const [part1Parsed, part2Parsed] = await Promise.all([
     part1Text ? runExtraction(PART1_SYSTEM, part1Text, 'consignee/consignor header') : Promise.resolve({}),
@@ -662,7 +694,7 @@ async function analyzeDocument({ part1Text, part2Text }) {
     fiDoc: pick('fiDoc'),
     challanDate: pick('challanDate'),
     reason: pick('reason'),
-    poNo: pick('poNo'),
+    poNo: applyPoNoRule(pick('poNo'), part1Text, warnings),
     requestNo: pick('requestNo'),
     irnNo: pick('irnNo'),
   }
