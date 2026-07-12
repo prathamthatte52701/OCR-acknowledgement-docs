@@ -186,7 +186,7 @@ export default function DocumentDetailPage() {
       <div className="flex flex-wrap gap-2 mb-6">
         {doc.uploadStatus === 'processed' && (
           <Link
-            to={`/documents/${id}/chat`}
+            to={`/documents/${id}/chat/part1`}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-[14.7px] font-medium rounded-lg transition-colors no-underline"
           >
             Chat with Document

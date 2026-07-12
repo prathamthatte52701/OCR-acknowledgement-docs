@@ -149,7 +149,7 @@ export default function DocumentCard({ doc }) {
         </Link>
         {status === 'processed' ? (
           <Link
-            to={`/documents/${doc._id}/chat`}
+            to={`/documents/${doc._id}/chat/part1`}
             className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-blue-500 px-3 py-3 text-[14.7px] font-black text-white no-underline shadow-[0_16px_38px_rgba(37,99,235,0.28)] transition-all hover:-translate-y-0.5 hover:shadow-[0_18px_48px_rgba(37,99,235,0.38)]"
           >
             <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">

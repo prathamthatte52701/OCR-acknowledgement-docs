@@ -202,7 +202,8 @@ function PageErrorState({ message }) {
 }
 
 export default function DocumentChatPage() {
-  const { id } = useParams()
+  const { id, part: rawPart } = useParams()
+  const part = rawPart === 'part2' ? 'part2' : rawPart === 'part1' ? 'part1' : undefined
   const [doc, setDoc] = useState(null)
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(true)
@@ -321,11 +322,22 @@ export default function DocumentChatPage() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <div className="min-w-0">
                 <h1 className="truncate text-2xl font-black tracking-tight text-white">{doc.autoName}</h1>
-                <p className="mt-1 truncate text-[14.7px] text-slate-400">{doc.documentType || 'Delivery Challan'} Chat</p>
+                <p className="mt-1 truncate text-[14.7px] text-slate-400">
+                  {doc.documentType || 'Delivery Challan'} Chat
+                  {part && <span className="ml-2 rounded-full border border-blue-300/25 bg-blue-500/10 px-2 py-0.5 text-[11.6px] font-bold text-blue-200">{part === 'part1' ? 'Part 1' : 'Part 2'}</span>}
+                </p>
               </div>
 
               <div className="flex items-center gap-2">
                 <StatusBadge status={doc.uploadStatus} />
+                {part && (
+                  <Link
+                    to={`/documents/${id}/chat/${part === 'part1' ? 'part2' : 'part1'}`}
+                    className="inline-flex items-center rounded-xl border border-blue-300/20 bg-slate-900/60 px-4 py-2 text-[14.7px] font-bold text-blue-200 no-underline transition-colors hover:border-blue-300/45 hover:bg-blue-500/10"
+                  >
+                    Switch to {part === 'part1' ? 'Part 2' : 'Part 1'}
+                  </Link>
+                )}
                 <Link
                   to={`/documents/${id}`}
                   className="inline-flex items-center rounded-xl border border-blue-300/20 bg-slate-900/60 px-4 py-2 text-[14.7px] font-bold text-blue-200 no-underline transition-colors hover:border-blue-300/45 hover:bg-blue-500/10"
@@ -364,6 +376,7 @@ export default function DocumentChatPage() {
                 onRate={handleRate}
                 onCorrect={(field) => setCorrectionField(field)}
                 onDetailAction={handleDetailAction}
+                part={part}
               />
             </div>
           )}

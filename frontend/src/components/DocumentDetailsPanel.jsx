@@ -11,6 +11,13 @@ const DETAIL_VIEWS = [
   { id: 'taxes', label: 'Taxes' },
 ]
 
+// Part 1 page: party/header info. Part 2 page: line-items/tax info. "About" and
+// "Full Summary" are shared on both since they're whole-document, not part-specific.
+const PART_VIEW_IDS = {
+  part1: ['summary', 'about', 'consignee', 'consigner'],
+  part2: ['summary', 'about', 'taxes', 'items'],
+}
+
 function formatDateTime(dateStr) {
   if (!dateStr) return '-'
   return new Date(dateStr).toLocaleString('en-IN', {
@@ -99,13 +106,18 @@ export function DetailView({ type, doc, onCorrect }) {
 
 // Button row only - clicking a button no longer toggles content inline here;
 // the parent appends the result to the chat history instead (see onSelect).
-export default function DocumentDetailsPanel({ doc, onSelect }) {
+// `part` ('part1' | 'part2' | undefined) restricts which buttons show, so the
+// Part 1 and Part 2 chat pages each surface only their own relevant actions.
+export default function DocumentDetailsPanel({ doc, onSelect, part }) {
   if (!doc || doc.uploadStatus !== 'processed') return null
+
+  const allowedIds = part ? PART_VIEW_IDS[part] : null
+  const views = allowedIds ? DETAIL_VIEWS.filter(v => allowedIds.includes(v.id)) : DETAIL_VIEWS
 
   return (
     <div className="border-t border-blue-300/12 bg-slate-950/68">
       <div className="flex flex-wrap gap-2 px-4 py-3">
-        {DETAIL_VIEWS.map(v => (
+        {views.map(v => (
           <button
             key={v.id}
             type="button"

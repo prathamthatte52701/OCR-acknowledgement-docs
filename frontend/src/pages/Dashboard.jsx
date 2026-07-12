@@ -124,7 +124,7 @@ function HeroIllustration() {
 function RecentDocumentRow({ doc }) {
   return (
     <Link
-      to={doc.uploadStatus === 'processed' ? `/documents/${doc._id}/chat` : `/documents/${doc._id}`}
+      to={doc.uploadStatus === 'processed' ? `/documents/${doc._id}/chat/part1` : `/documents/${doc._id}`}
       className="group grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.035] px-4 py-3 no-underline transition-all hover:border-blue-300/25 hover:bg-blue-500/[0.055]"
     >
       <span className="grid h-11 w-11 place-items-center rounded-2xl border border-blue-300/15 bg-blue-500/10 text-[12.6px] font-black text-blue-200">

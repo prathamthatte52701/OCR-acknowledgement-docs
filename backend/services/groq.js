@@ -104,6 +104,7 @@ FIELD LABEL GUIDE:
 - "PAN No" under Consignee = consignee.pan; "VECV PAN No" = consignor.pan
 - Address spans multiple lines (street, city, pincode) - join into one field
 - "FI Doc" is a numeric document id, separate from "Invoice No"
+- LABELS ARE OFTEN TRUNCATED BY OCR - the leading character(s) of a label are frequently cut off or merged with the previous line. Recognize a label from a distinctive trailing fragment even if the start is missing: "oice No" / "nvoice No" = "Invoice No", "TIN No" = "GSTIN No", "onsignee" = "Consignee", "eason" = "Reason", "equest No" = "Request No". Do not require an exact full-word match on the label before extracting the value that follows it.
 
 CONSIGNEE vs CONSIGNOR DISAMBIGUATION - CRITICAL:
 - The OCR text loses the visual left/right column boundary, so lines from both parties often appear interleaved, merged, or out of order.
@@ -116,23 +117,28 @@ ADDRESS BOUNDARY RULE - CRITICAL (prevents cross-party address mixing):
 - Stop collecting address lines the moment you hit any of: "State Code", "GSTIN No", "PAN No", "VECV GSTIN No", "VECV PAN No", "Name", "Invoice No", "PO No." - text after one of these belongs to a different field or the other party, never to the address you were building.
 - Do NOT carry a street/building line (e.g. "87A Industrial Area...", "A. B Road Dewas") into the OTHER party's address just because it appeared near their address lines in the flattened text - each party's address lines sit only under that party's own "Address" label.
 
-REFERENCE VALUES - this document type always has the same Consignor, and the same Consignee company (only branch address/state/GSTIN differ by location). Use these ONLY to sanity-check and correct clearly OCR-garbled values, never to overwrite a value that is already clearly and consistently read as something else in the text:
-- Consignor is always: name "VE Commercial Vehicles Ltd (UNIT - EEC)", address "87A Industrial Area No 3, A. B Road Dewas, 455001", state "Madhya Pradesh", stateCode "23", gstin "23AABCE9378F3ZI", pan "AABCE9378F".
+REFERENCE VALUES - this document type always has the same Consignor, and the same Consignee company (only branch details differ). Use these ONLY to sanity-check and correct clearly OCR-garbled values, never to overwrite a value that is already clearly and consistently read as something else in the text:
+- Consignor is always: name "VE Commercial Vehicles Ltd (UNIT - EEC)", state "Madhya Pradesh", stateCode "23", gstin "23AABCE9378F3ZI", pan "AABCE9378F".
+- Consignor ADDRESS is the one exception with NO single fixed reference - it genuinely varies between two different printed prefixes across real bills: "87A Industrial Area No 3, A. B Road Dewas, 455001" on some bills, "78-86 Industrial Area No 3, A. B Road Dewas, 455001" on others. Read whichever prefix is ACTUALLY printed in the OCR text for this specific document - do not default to "87A" (or either variant) as a fallback guess when the address is unclear. If you truly cannot tell which prefix is printed, return null for the address rather than guessing one of the two.
 - Consignee company name is always "OERLIKON BALZERS COATING INDIA" and pan is always "AAACI3916N" regardless of branch; consignee address/state/stateCode/gstin vary by branch and must come from the OCR text, not from this reference.
 - If a value you're about to output for Consignor differs from its reference value, re-check whether it actually belongs to Consignee instead (a column mix-up) before accepting it as a genuine difference.
 
 CHARACTER CORRECTION RULES - CONSERVATIVE, NEVER FABRICATE:
 GSTIN format is always: 2 digits + 5 letters + 4 digits + 1 letter + 1 digit + "Z" + 1 digit (15 characters total).
 PAN format is always: 5 letters + 4 digits + 1 letter (10 characters total).
-- Only correct a character when the REST of the value already clearly matches the expected length/shape and the specific character is a well-known OCR confusable in that exact position (S<->5, O<->0, I<->1, Z<->2, B<->8, G<->6, or position-13 of a GSTIN which is always "Z").
-- Do NOT pad, invent, or reconstruct characters to force a garbled value into the right length or shape. If the OCR text does not contain enough recognizable characters to confidently reconstruct a valid GSTIN/PAN, return null for that field - do not guess.
-- NEVER write a justification like "assuming..." or "using standard format" to explain a value - if you find yourself doing that, you are fabricating; return null instead and say so in warnings.
+- A "correction" ONLY means swapping ONE character that OCR clearly rendered as a specific, different, visually-similar character in that exact position - e.g. the OCR text shows a real "5" where a letter is expected, and you change it to "S". Known confusable pairs: S<->5, O<->0, I<->1, Z<->2, B<->8, G<->6, and position-13 of a GSTIN which is always "Z".
+- A correction is NEVER filling in a character that is missing, blank, unreadable, or represented by a placeholder (blank space, "?", "_", "X", or similar) in the source. If a character position has nothing legible there at all, that position stays missing - represent the field as the partial string you DID read (see NULL RULES below), do not complete it using the GSTIN/PAN format, the reference values, or any other pattern-based guess.
+- Test yourself before outputting a correction: can you point to the EXACT wrong character OCR actually printed at that position? If yes, correct it. If the honest answer is "there's nothing there to point to, but I know what it should probably be," that is fabrication - do not do it.
+- NEVER write a justification like "assuming..." or "using standard format" or "corrected X->Y" where X is blank/placeholder rather than a real misread character - if you find yourself doing that, you are fabricating.
 - Log every genuine single-character correction in warnings, e.g. "Consignee GSTIN position 13: corrected 2->Z"
 ${PRINTED_ONLY_RULE}
 
-NULL RULES:
-- null for every missing or unreadable field - never fabricate any value
-- Use warnings[] to log every field that was unclear, partially read, or excluded due to stamp/handwriting overlap`
+NULL RULES - CRITICAL DISTINCTION:
+- null means "the OCR text contains NOTHING for this field" - no characters, no fragment, nothing to point to.
+- If the OCR text contains SOME real, legible characters for a field but not the complete value, return exactly those characters as a partial string (e.g. GSTIN "24AAAC...16N1ZI" with the unreadable middle segment simply omitted, not guessed) rather than nulling the whole field. Do not discard real (if incomplete) OCR output just because it isn't the full value.
+- Do NOT pad the partial string out to the expected length by inventing the missing characters - that is fabrication, covered above. A partial value is allowed to be the "wrong" length.
+- Whenever you return a partial/uncertain fragment instead of a clean complete value, say so in warnings (e.g. "Consignee PAN partially read: 'AAAC...16N' - middle characters not legible in the source").
+- Never fabricate a value that has zero basis in the OCR text - that is the only thing "never fabricate" means. It does NOT mean "when in doubt, return null" for a field you DID find real text for.`
 
 const PART2_SYSTEM = `You are a document extraction specialist for Indian company bills (consignor consignee bills) (Consignor-Consignee) documents issued under Rule 55 of CGST Rule.
 
@@ -180,10 +186,13 @@ RULES - MANDATORY:
 - NEVER pull a value from the CGST/SGST/IGST/Total Basic Amount/Total Amount footer into a line item's Basic/Amount field. Footer totals and per-row amounts are different numbers from different parts of the text - do not cross-assign between them.
 ${PRINTED_ONLY_RULE}
 
-NULL RULES:
-- null for any missing or unreadable field - never fabricate any value
+NULL RULES - CRITICAL DISTINCTION:
+- null means "the OCR text contains NOTHING for this field" - no digits, no fragment, nothing to point to.
+- If the OCR text contains SOME real, legible characters for a field (a partial HSN code, a smudged amount, a fragment of a description) but not the complete value, return exactly those characters as a partial string, never null and never padded out to a "complete-looking" value. Do not discard real (if incomplete) OCR output just because it isn't the full value. This does not override the earlier rule against fabricating a whole row that isn't really there - a row still needs a genuinely readable description to exist at all; this rule is about not nulling or completing individual fields WITHIN a row that does exist.
+- Do NOT invent the missing portion of a partial field to make it look complete (e.g. a 6-digit HSN code with only 4 digits legible stays a 4-digit partial string, it does not get 2 more digits invented to match the expected format).
+- Whenever you return a partial/uncertain fragment instead of a clean complete value, say so in warnings.
 - If the line-items table is completely unreadable, return an empty lineItems array and explain in warnings
-- Use warnings[] to log every field that was unclear, partially read, or excluded due to stamp/handwriting overlap`
+- Never fabricate a value that has zero basis in the OCR text - that is the only thing "never fabricate" means. It does NOT mean "when in doubt, return null" for a field you DID find real text for.`
 
 function stripMarkdown(text) {
   return text
@@ -580,6 +589,54 @@ function applyCorrection(canonical, normalizedKey, value) {
   return true
 }
 
+// This template has exactly two possible Consignee addresses (fixed to the
+// detected State) and exactly two possible Consignor address prefixes - the
+// address field is the largest source of extraction error because its value
+// spans unlabeled continuation lines the AI has to reassemble from flattened
+// text. Since only two outcomes are ever valid, replace the AI's guess with a
+// deterministic lookup instead of trusting free-form reconstruction.
+const CONSIGNEE_ADDRESS_BY_STATE = {
+  gujarat: 'AHMEDABAD 382220',
+  maharashtra: 'PUNE 411026',
+}
+
+function applyConsigneeAddressRule(consignee, warnings) {
+  if (!consignee) return consignee
+  const stateName = (consignee.stateName || '').toLowerCase()
+  const matchedState = Object.keys(CONSIGNEE_ADDRESS_BY_STATE).find(s => stateName.includes(s))
+  if (!matchedState) {
+    warnings.push('Consignee state was not recognized as Gujarat or Maharashtra - address left as OCR-extracted rather than applying the deterministic rule.')
+    return consignee
+  }
+  const canonicalAddress = CONSIGNEE_ADDRESS_BY_STATE[matchedState]
+  if (consignee.address !== canonicalAddress) {
+    warnings.push(`Consignee address set from the fixed ${matchedState[0].toUpperCase()}${matchedState.slice(1)} template value (deterministic rule), overriding OCR read "${consignee.address || 'null'}".`)
+  }
+  return { ...consignee, address: canonicalAddress }
+}
+
+function detectConsignorAddressPrefix(text) {
+  if (/\b87\s*A\b/i.test(text)) return '87A Industrial Area No 3, A. B Road Dewas, 455001'
+  if (/\b7[89][\s-]{0,3}[89]\d\b/i.test(text)) return '78-86 Industrial Area No 3, A. B Road Dewas, 455001'
+  return null
+}
+
+function applyConsignorAddressRule(consignor, part1Text, warnings) {
+  if (!consignor) return consignor
+  // Check the RAW OCR text first, in isolation - the AI's own consignor.address
+  // field is exactly what we don't trust here (it can echo a biased guess), so
+  // it's only ever consulted as a last-resort secondary signal, never first.
+  const canonicalAddress = detectConsignorAddressPrefix(part1Text || '') || detectConsignorAddressPrefix(consignor.address || '')
+  if (!canonicalAddress) {
+    warnings.push('Consignor address prefix (87A vs 78-86) could not be confidently matched - address left as OCR-extracted rather than applying the deterministic rule.')
+    return consignor
+  }
+  if (consignor.address !== canonicalAddress) {
+    warnings.push(`Consignor address set from the fixed template value (deterministic rule), overriding OCR read "${consignor.address || 'null'}".`)
+  }
+  return { ...consignor, address: canonicalAddress }
+}
+
 async function analyzeDocument({ part1Text, part2Text }) {
   const [part1Parsed, part2Parsed] = await Promise.all([
     part1Text ? runExtraction(PART1_SYSTEM, part1Text, 'consignee/consignor header') : Promise.resolve({}),
@@ -599,8 +656,8 @@ async function analyzeDocument({ part1Text, part2Text }) {
   const pick = (key) => part1Parsed[key] ?? part2Parsed[key] ?? null
 
   const part1Like = {
-    consignee: part1Parsed.consignee || null,
-    consignor: part1Parsed.consignor || null,
+    consignee: applyConsigneeAddressRule(part1Parsed.consignee || null, warnings),
+    consignor: applyConsignorAddressRule(part1Parsed.consignor || null, part1Text, warnings),
     invoiceNo: pick('invoiceNo'),
     fiDoc: pick('fiDoc'),
     challanDate: pick('challanDate'),

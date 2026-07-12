@@ -118,7 +118,7 @@ export default function UploadPage() {
             clearInterval(pollRef.current)
             pollRef.current = null
             setStatus('done')
-            setTimeout(() => navigate(`/documents/${docId}/chat`), 800)
+            setTimeout(() => navigate(`/documents/${docId}/chat/part1`), 800)
           } else if (doc?.uploadStatus === 'failed') {
             clearInterval(pollRef.current)
             pollRef.current = null
