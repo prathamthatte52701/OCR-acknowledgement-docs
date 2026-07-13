@@ -160,14 +160,19 @@ async function run() {
     // fragments), and "UNCODED RGP"/"HSN" etc. are printed as column headers
     // even when the row data below them got lost, so keyword-anywhere-in-text
     // + digit-anywhere-in-text (unrelated, non-adjacent matches) still
-    // false-positives. Every real item row on this template carries the HSN/SAC
-    // code "998729" or "998719" specifically - checking for those two known
-    // codes verbatim is unambiguous proof an actual row was captured. Used ONLY
+    // false-positives. Every real item row on this template carries an HSN/SAC
+    // code of the shape "99_7__" (998729/998719 are the clean reads, but OCR
+    // noise on the middle/last digits routinely produces 993729/995729/994729/
+    // 998720 etc on otherwise-correctly-captured rows) - matching verbatim
+    // "998729"/"998719" only rejected those noisy-but-real rows as "no
+    // evidence" and triggered a wasteful, duplicating table-band recovery merge
+    // on a table that was already captured. The structural "99_7__" pattern
+    // stays specific enough to never match footer phone/CIN numbers. Used ONLY
     // by the Part-2-only last-resort table-band recovery further below - normal
     // candidate selection (both Part 1 and Part 2) is untouched plain
     // scoreResult(), exactly as it was before this recovery mechanism existed.
     function hasTableEvidence(text) {
-      return /\b998(729|719)\b/.test(text)
+      return /\b99\d7\d\d\b/.test(text)
     }
 
     async function ocrPart({ bin, gray }, label) {

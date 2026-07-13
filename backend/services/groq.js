@@ -733,6 +733,21 @@ function applyPoNoRule(poNo, part1Text, warnings) {
   return poNo
 }
 
+// FI Doc is always a pure digit string on this template (e.g. "1015002277").
+// When OCR badly garbles the value, the AI has occasionally passed through
+// whatever word-like noise Tesseract produced (e.g. "sides") as if it were the
+// real value - same fabrication-adjacent problem isGarbageLineItem already
+// guards against for line items. If the value contains any letters, it's not
+// a real FI Doc reading - null it out instead of showing garbage as real data.
+function applyFiDocGuard(fiDoc, warnings) {
+  if (!fiDoc) return fiDoc
+  if (/[a-zA-Z]/.test(fiDoc)) {
+    warnings.push(`FI Doc value "${fiDoc}" discarded (not a valid digit string - likely OCR misread) and set to null instead of showing garbage as real data.`)
+    return null
+  }
+  return fiDoc
+}
+
 async function analyzeDocument({ part1Text, part2Text }) {
   const [part1Parsed, part2Parsed] = await Promise.all([
     part1Text ? runExtraction(PART1_SYSTEM, part1Text, 'consignee/consignor header') : Promise.resolve({}),
@@ -756,7 +771,7 @@ async function analyzeDocument({ part1Text, part2Text }) {
     consignee: applyConsigneeAddressRule(part1Parsed.consignee || null, warnings),
     consignor: applyConsignorAddressRule(part1Parsed.consignor || null, part1Text, warnings),
     invoiceNo: pick('invoiceNo'),
-    fiDoc: pick('fiDoc'),
+    fiDoc: applyFiDocGuard(pick('fiDoc'), warnings),
     challanDate: pick('challanDate'),
     reason: pick('reason'),
     poNo: applyPoNoRule(pick('poNo'), part1Text, warnings),
