@@ -35,7 +35,7 @@ function filterFields(fields, prefix, extraKeys) {
 // Renders the content for one detail view. Always reads live from `doc`, so
 // every appended chat entry (past or present) reflects the current field
 // values - there's no separate stale snapshot to fall out of sync.
-export function DetailView({ type, doc, onCorrect }) {
+export function DetailView({ type, doc, onCorrect, onAddRow }) {
   if (!doc) return null
   const fields = doc.extractedFields || []
 
@@ -67,7 +67,7 @@ export function DetailView({ type, doc, onCorrect }) {
   }
   if (type === 'items') {
     const itemsAndTaxTables = (doc.extractedTables || []).filter(t => t.title === 'Line Items' || t.title === 'Totals')
-    return <ExtractedTablesView tables={itemsAndTaxTables} fields={fields} onCorrect={onCorrect} />
+    return <ExtractedTablesView tables={itemsAndTaxTables} fields={fields} onCorrect={onCorrect} onAddRow={onAddRow} />
   }
   if (type === 'taxes') {
     const taxTables = (doc.extractedTables || []).filter(t => t.title === 'Totals')

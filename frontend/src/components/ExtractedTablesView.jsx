@@ -36,7 +36,7 @@ function findFieldForCell(tableTitle, row, col, fieldsByLabel, rowIndex) {
   return fieldsByLabel[col.toLowerCase()] || null
 }
 
-export default function ExtractedTablesView({ tables, fields, onCorrect }) {
+export default function ExtractedTablesView({ tables, fields, onCorrect, onAddRow }) {
   const fieldsByLabel = buildFieldsByLabel(fields)
 
   if (!tables || tables.length === 0) {
@@ -59,6 +59,14 @@ export default function ExtractedTablesView({ tables, fields, onCorrect }) {
               <span className="text-blue-400">Table</span>
               {table.title || `Table ${ti + 1}`}
             </h3>
+            {table.title === 'Line Items' && onAddRow && (
+              <button
+                onClick={onAddRow}
+                className="text-xs text-blue-400 hover:text-blue-300 transition-colors border border-blue-800/50 rounded-lg px-3 py-1.5"
+              >
+                + Add Row
+              </button>
+            )}
           </div>
           {table.sourceHint && (
             <p className="px-4 py-2 text-xs text-gray-600 border-b border-gray-800">{table.sourceHint}</p>

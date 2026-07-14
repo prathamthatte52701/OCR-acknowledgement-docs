@@ -51,7 +51,7 @@ function RatingBar({ messageId, onRate }) {
   )
 }
 
-export default function ChatMessageBubble({ message, onRate, doc, onCorrect }) {
+export default function ChatMessageBubble({ message, onRate, doc, onCorrect, onAddRow }) {
   const isUser = message.role === 'user'
   const isDetail = message.kind === 'detail'
   const canRate = !isUser && !isDetail && message._id && typeof onRate === 'function'
@@ -69,7 +69,7 @@ export default function ChatMessageBubble({ message, onRate, doc, onCorrect }) {
         )}
 
         {isDetail ? (
-          <DetailView type={message.detailType} doc={doc} onCorrect={onCorrect} />
+          <DetailView type={message.detailType} doc={doc} onCorrect={onCorrect} onAddRow={onAddRow} />
         ) : (
           <div className={`rounded-2xl px-4 py-3 text-[14.7px] leading-relaxed shadow-[0_16px_46px_rgba(2,8,23,0.24)] ${
             isUser

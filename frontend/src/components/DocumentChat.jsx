@@ -3,7 +3,7 @@ import ChatMessageBubble from './ChatMessageBubble'
 import DocumentDetailsPanel from './DocumentDetailsPanel'
 import LoadingState from './LoadingState'
 
-export default function DocumentChat({ messages, onSendMessage, loading, externalSending = false, doc, onRate, onCorrect, onDetailAction, part }) {
+export default function DocumentChat({ messages, onSendMessage, loading, externalSending = false, doc, onRate, onCorrect, onAddRow, onDetailAction, part }) {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const messagesRef = useRef(null)
@@ -42,7 +42,7 @@ export default function DocumentChat({ messages, onSendMessage, loading, externa
           </div>
         ) : (
           messages.map((msg, i) => (
-            <ChatMessageBubble key={msg._id || msg._localId || i} message={msg} onRate={onRate} doc={doc} onCorrect={onCorrect} />
+            <ChatMessageBubble key={msg._id || msg._localId || i} message={msg} onRate={onRate} doc={doc} onCorrect={onCorrect} onAddRow={onAddRow} />
           ))
         )}
 

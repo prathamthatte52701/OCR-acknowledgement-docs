@@ -24,6 +24,7 @@ const Correction = require('../models/Correction')
 const { uploadBuffer, downloadBuffer, deleteFile } = require('../services/gridfs')
 const { extractParts, extractSingleImagePart } = require('../services/ocr')
 const { analyzeDocument, assembleDocumentViews, applyCorrection } = require('../services/groq')
+const { extractLineItemsViaGrid } = require('../services/grid-line-items')
 
 const storage = multer.memoryStorage()
 const upload = multer({
@@ -249,6 +250,35 @@ async function processDocumentTwoImages(docId, part1Buffer, part1MimeType, part2
         processingError: 'AI analysis is unavailable. Please check the Groq API key or try again later.',
       })
       return
+    }
+
+    // Part 2 ONLY, additive - try the OpenCV grid-based line-item extraction
+    // (detects the table's real border lines, deskews, OCRs each cell alone -
+    // avoids the column/row-bleed that whole-image OCR is prone to). Only
+    // ever ADOPTED when it finds strictly MORE items than the existing
+    // AI-parsed result - same "never regress" rule used elsewhere in this
+    // file (PO No, HSN fallback). On any failure (no Python, bad grid, etc)
+    // this returns null and groqResult is used completely unchanged.
+    try {
+      const gridItems = await extractLineItemsViaGrid(part2Buffer)
+      const existingCount = Array.isArray(groqResult.lineItems) ? groqResult.lineItems.length : 0
+      if (gridItems && gridItems.length > existingCount) {
+        const part1Like = {
+          consignee: groqResult.consignee, consignor: groqResult.consignor,
+          invoiceNo: groqResult.invoiceNo, fiDoc: groqResult.fiDoc, challanDate: groqResult.challanDate,
+          reason: groqResult.reason, poNo: groqResult.poNo, requestNo: groqResult.requestNo, irnNo: groqResult.irnNo,
+        }
+        const part2Like = { lineItems: gridItems, totals: groqResult.totals }
+        const views = assembleDocumentViews(part1Like, part2Like)
+        groqResult = {
+          ...groqResult,
+          lineItems: gridItems,
+          ...views,
+          warnings: [...(groqResult.warnings || []), `Line items replaced with grid-based extraction (${gridItems.length} rows found vs ${existingCount} from the standard method).`],
+        }
+      }
+    } catch (err) {
+      console.error('Grid line-item extraction error (ignored, using standard result):', err.message)
     }
 
     await updateActiveDocument(docId, {
@@ -702,6 +732,83 @@ router.patch('/:id/fields/:fieldKey/correct', async (req, res) => {
   } catch (err) {
     console.error('Correction error:', err)
     res.status(500).json({ error: 'Failed to save correction.' })
+  }
+})
+
+// POST /api/documents/:id/line-items - user manually adds a row the OCR/AI
+// missed entirely (not a correction to an existing row - a brand new one).
+// Same single-source-of-truth pattern as the correct route: append to the
+// canonical lineItems array, then regenerate every derived view from it.
+router.post('/:id/line-items', async (req, res) => {
+  try {
+    const { srNo, description, hsnSac, basic, quantity, amount } = req.body
+    if (!description || !description.trim()) {
+      return res.status(400).json({ error: 'Description is required.' })
+    }
+
+    const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
+    if (!doc) return res.status(404).json({ error: 'Document not found.' })
+
+    const canonical = {
+      consignee: doc.consignee ? doc.consignee.toObject() : null,
+      consignor: doc.consignor ? doc.consignor.toObject() : null,
+      invoiceNo: doc.invoiceNo,
+      fiDoc: doc.fiDoc,
+      challanDate: doc.challanDate,
+      reason: doc.reason,
+      poNo: doc.poNo,
+      requestNo: doc.requestNo,
+      irnNo: doc.irnNo,
+      lineItems: [
+        ...(doc.lineItems || []).map(item => item.toObject()),
+        {
+          srNo: srNo?.trim() || null,
+          description: description.trim(),
+          hsnSac: hsnSac?.trim() || null,
+          basic: basic?.trim() || null,
+          quantity: quantity?.trim() || null,
+          amount: amount?.trim() || null,
+        },
+      ],
+      totals: doc.totals ? doc.totals.toObject() : null,
+    }
+
+    const views = assembleDocumentViews(canonical, canonical)
+    const markEdited = (fields) => {
+      (fields || []).forEach(f => {
+        if (doc.editedFieldKeys.includes(f.normalizedKey)) f.edited = true
+      })
+    }
+    markEdited(views.fields)
+    markEdited(views.part1.fields)
+    markEdited(views.part2.fields)
+
+    doc.lineItems = canonical.lineItems
+    doc.extractedFields = views.fields
+    doc.extractedTables = views.tables
+    doc.fullSummary = views.fullSummary
+    doc.summaryPoints = views.summaryPoints
+    doc.part1 = { ocrText: doc.part1?.ocrText || null, fields: views.part1.fields, summary: views.part1.summary }
+    doc.part2 = { ocrText: doc.part2?.ocrText || null, fields: views.part2.fields, tables: views.part2.tables, summary: views.part2.summary }
+
+    await doc.save()
+
+    await Correction.create({
+      documentId: doc._id,
+      fieldLabel: `Item ${canonical.lineItems.length} (manually added)`,
+      fieldKey: `item_${canonical.lineItems.length}_description`,
+      oldValue: null,
+      newValue: description.trim(),
+      correctedAt: new Date(),
+    })
+    await Document.findByIdAndUpdate(doc._id, { $inc: { trainingWeight: 1 } })
+
+    const updated = doc.toObject()
+    delete updated.part1OcrTextHidden; delete updated.part2OcrTextHidden
+    res.json({ message: 'Row added successfully.', document: updated })
+  } catch (err) {
+    console.error('Add line-item error:', err)
+    res.status(500).json({ error: 'Failed to add row.' })
   }
 })
 

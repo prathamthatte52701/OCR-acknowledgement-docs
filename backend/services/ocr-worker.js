@@ -16,10 +16,18 @@ async function run() {
   const sharp = require('sharp')
   const Tesseract = require('tesseract.js')
 
-  // -- Step 1: 4x upscale for maximum OCR readability (accuracy over speed) --
+  // -- Step 1: upscale for maximum OCR readability (accuracy over speed) --
+  // Part 1 (header) stays 4x - confirmed best/plateau there. Part 2 (dense
+  // small-font line-items table) tested better at 3.5x on real samples (55-56
+  // confidence vs 4x's 51) - over-upscaling a table this dense in text starts
+  // hurting rather than helping. Only applies in single-part mode where each
+  // image is known to be exactly one part; the combined-image auto-split flow
+  // below (singlePartMode undefined) is untouched at 4x, since it upscales
+  // once before the split and can't apply a different factor per crop anyway.
+  const upscaleFactor = singlePartMode === 'part2' ? 3.5 : 4
   const meta = await sharp(buffer).metadata()
   const upscaledBuffer = await sharp(buffer)
-    .resize({ width: (meta.width || 1000) * 4, kernel: 'lanczos3', withoutEnlargement: false })
+    .resize({ width: Math.round((meta.width || 1000) * upscaleFactor), kernel: 'lanczos3', withoutEnlargement: false })
     .toBuffer()
 
   // -- Step 2: grayscale only. Testing against these phone-photo samples showed

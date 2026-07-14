@@ -184,6 +184,7 @@ RULES - MANDATORY:
 - CGST/SGST/IGST rows may show "0.00" as a genuine printed value - keep it as "0.00", do not convert to null.
 - NEVER invent a line item to fill a gap. A genuine row needs a real, readable Description - if you cannot read a plausible item description for a row (e.g. all you have is a stray number, a fragment like "2 S---", or noise), DO NOT add it to lineItems at all. An incomplete-but-real row (missing only Basic/Quantity) is fine to include with those fields null; a row you cannot actually read is not - omit it entirely.
 - NEVER pull a value from the CGST/SGST/IGST/Total Basic Amount/Total Amount footer into a line item's Basic/Amount field. Footer totals and per-row amounts are different numbers from different parts of the text - do not cross-assign between them.
+- The table has exactly this column order left to right: SR No, Description, HSN/SAC, Basic, Quantity, Amount. Basic and Amount are usually the two largest numbers in the row (item's unit price and line total) and are usually similar or identical when Quantity is 1; Quantity is almost always a small 1-2 digit whole number (1, 2, 3...), never a number formatted with a decimal point and two trailing zeros like "10,000.00". If the value you are about to place in "quantity" looks like a large formatted currency amount rather than a small whole number, you have most likely misread the column boundary - re-check which OCR token is actually under the Quantity column heading before assigning it.
 ${PRINTED_ONLY_RULE}
 
 NULL RULES - CRITICAL DISTINCTION:
@@ -502,6 +503,67 @@ function sanitizeLineItems(lineItems, warnings) {
   return kept
 }
 
+// OCR/AI sometimes attaches a stray leading character to an otherwise-correct
+// numeric field (currency symbol misread, a table-border pipe, a neighboring
+// column's first digit) - e.g. "£00.00" or "| 700.00" where the real value is
+// "700.00"/"900.00". Keep only the actual number pattern; leave the field
+// untouched if it doesn't look like a number-with-noise (never invents a value).
+function cleanNumericField(value) {
+  if (value === null || value === undefined) return value
+  const s = String(value).trim()
+  // Prefer the LAST decimal-formatted number in the string, not the first
+  // digit run - a garbage prefix is sometimes itself a lone digit ("| 3
+  // 1,400.00"), and naively taking the first match would grab that stray "3"
+  // instead of the real "1,400.00" that follows it.
+  const decimalMatches = s.match(/\d[\d,]*\.\d{1,2}/g)
+  if (decimalMatches && decimalMatches.length) return decimalMatches[decimalMatches.length - 1]
+  const wholeMatches = s.match(/\d[\d,]*/g)
+  if (wholeMatches && wholeMatches.length) return wholeMatches[wholeMatches.length - 1]
+  return value
+}
+
+function cleanLineItemNumbers(items) {
+  return items.map(item => ({
+    ...item,
+    basic: cleanNumericField(item.basic),
+    quantity: cleanNumericField(item.quantity),
+    amount: cleanNumericField(item.amount),
+  }))
+}
+
+function normalizeDescriptionForMerge(desc) {
+  return (desc || '').replace(/[^a-z0-9]/gi, '').toLowerCase()
+}
+
+// Occasionally the AI reads the same printed row twice with different fields
+// populated each time (one pass captures Basic+SR No, the next captures
+// Quantity+Amount) instead of once cleanly - this shows up as two adjacent
+// rows with an identical description where each has some fields null. Merge
+// adjacent rows sharing a description into one, keeping whichever fields are
+// non-null. Never merges rows with different descriptions (real distinct
+// items on this template never repeat description text row-to-row).
+function mergeDuplicateDescriptionRows(items, warnings) {
+  const merged = []
+  for (const item of items) {
+    const prev = merged[merged.length - 1]
+    const key = normalizeDescriptionForMerge(item.description)
+    if (prev && key && normalizeDescriptionForMerge(prev.description) === key) {
+      merged[merged.length - 1] = {
+        srNo: prev.srNo || item.srNo,
+        description: prev.description,
+        hsnSac: prev.hsnSac || item.hsnSac,
+        basic: prev.basic || item.basic,
+        quantity: prev.quantity || item.quantity,
+        amount: prev.amount || item.amount,
+      }
+      warnings.push(`Merged a duplicate-description row (SR ${item?.srNo ?? 'unknown'}) into the preceding row instead of showing it twice.`)
+      continue
+    }
+    merged.push(item)
+  }
+  return merged
+}
+
 // On this template every row in a single UNCODED RGP table shares the same
 // HSN/SAC code (e.g. all rows "998729") - when OCR reads it on some rows but
 // misses it on others in the SAME document, fill the gaps with that one value
@@ -759,7 +821,10 @@ async function analyzeDocument({ part1Text, part2Text }) {
     ...(Array.isArray(part2Parsed.warnings) ? part2Parsed.warnings : []),
   ]
 
-  part2Parsed.lineItems = applyHsnSacFallback(sanitizeLineItems(part2Parsed.lineItems, warnings), warnings)
+  part2Parsed.lineItems = applyHsnSacFallback(
+    mergeDuplicateDescriptionRows(cleanLineItemNumbers(sanitizeLineItems(part2Parsed.lineItems, warnings)), warnings),
+    warnings
+  )
   part2Parsed.totals = applyTotalsSanityRule(part2Parsed.totals, warnings)
 
   // Header metadata usually comes from Part 1, but the automatic page split can

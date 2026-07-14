@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom'
 import api from '../utils/api'
 import DocumentChat from '../components/DocumentChat'
 import CorrectionModal from '../components/CorrectionModal'
+import AddRowModal from '../components/AddRowModal'
 
 function formatDateTime(dateStr) {
   if (!dateStr) return '-'
@@ -209,6 +210,7 @@ export default function DocumentChatPage() {
   const [error, setError] = useState('')
   const [chatSending, setChatSending] = useState(false)
   const [correctionField, setCorrectionField] = useState(null)
+  const [addingRow, setAddingRow] = useState(false)
   const sendingRef = useRef(false)
 
   useEffect(() => {
@@ -279,6 +281,17 @@ export default function DocumentChatPage() {
       setDoc(res.data?.document)
     } catch {
       alert('Failed to save correction.')
+    }
+  }
+
+  async function handleAddRow(values) {
+    try {
+      await api.post(`/documents/${id}/line-items`, values)
+      setAddingRow(false)
+      const res = await api.get(`/documents/${id}`)
+      setDoc(res.data?.document)
+    } catch {
+      alert('Failed to add row.')
     }
   }
 
@@ -374,6 +387,7 @@ export default function DocumentChatPage() {
                 doc={doc}
                 onRate={handleRate}
                 onCorrect={(field) => setCorrectionField(field)}
+                onAddRow={() => setAddingRow(true)}
                 onDetailAction={handleDetailAction}
                 part={part}
               />
@@ -389,6 +403,12 @@ export default function DocumentChatPage() {
           onClose={() => setCorrectionField(null)}
         />
       )}
+
+      <AddRowModal
+        open={addingRow}
+        onSave={handleAddRow}
+        onClose={() => setAddingRow(false)}
+      />
     </div>
   )
 }

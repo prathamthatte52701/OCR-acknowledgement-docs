@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import api from '../utils/api'
 import { DetailView } from '../components/DocumentDetailsPanel'
 import CorrectionModal from '../components/CorrectionModal'
+import AddRowModal from '../components/AddRowModal'
 import LoadingState from '../components/LoadingState'
 import ErrorMessage from '../components/ErrorMessage'
 import ProcessingState from '../components/ProcessingState'
@@ -29,6 +30,7 @@ export default function DocumentDetailPage() {
   const [error, setError] = useState('')
   const [activeTab, setActiveTab] = useState('part1')
   const [correctionField, setCorrectionField] = useState(null)
+  const [addingRow, setAddingRow] = useState(false)
   const [reprocessing, setReprocessing] = useState(false)
   const [reprocessMsg, setReprocessMsg] = useState('')
   const [deleting, setDeleting] = useState(false)
@@ -73,6 +75,16 @@ export default function DocumentDetailPage() {
       fetchDoc()
     } catch {
       alert('Failed to save correction.')
+    }
+  }
+
+  async function handleAddRow(values) {
+    try {
+      await api.post(`/documents/${id}/line-items`, values)
+      setAddingRow(false)
+      fetchDoc()
+    } catch {
+      alert('Failed to add row.')
     }
   }
 
@@ -251,7 +263,7 @@ export default function DocumentDetailPage() {
                 Part 2 - the lower section of the page: Uncoded RGP line-items and GST tax totals table.
               </div>
               <h3 className="text-gray-300 font-semibold">Uncoded RGP</h3>
-              <DetailView type="items" doc={doc} onCorrect={(field) => setCorrectionField(field)} />
+              <DetailView type="items" doc={doc} onCorrect={(field) => setCorrectionField(field)} onAddRow={() => setAddingRow(true)} />
             </div>
           )}
         </>
@@ -264,6 +276,12 @@ export default function DocumentDetailPage() {
           onClose={() => setCorrectionField(null)}
         />
       )}
+
+      <AddRowModal
+        open={addingRow}
+        onSave={handleAddRow}
+        onClose={() => setAddingRow(false)}
+      />
     </div>
   )
 }
