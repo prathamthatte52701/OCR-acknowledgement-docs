@@ -751,12 +751,23 @@ function detectConsignorAddressPrefix(text) {
 
 function applyConsignorAddressRule(consignor, part1Text, warnings) {
   if (!consignor) return consignor
-  // Check the RAW OCR text first, in isolation - the AI's own consignor.address
-  // field is exactly what we don't trust here (it can echo a biased guess), so
-  // it's only ever consulted as a last-resort secondary signal, never first.
-  const canonicalAddress = detectConsignorAddressPrefix(part1Text || '') || detectConsignorAddressPrefix(consignor.address || '')
+  // RULE 4 FINDING (see task write-up in the final report): this rule's
+  // canonical-address detection must be sourced ONLY from the raw OCR text
+  // (part1Text). The previous implementation fell back to
+  // detectConsignorAddressPrefix(consignor.address) when the raw text didn't
+  // match either prefix - but consignor.address is exactly the AI's own
+  // (possibly hallucinated) output. That fallback let a hallucinated address
+  // like "78-86 Industrial Area No 3, A. B Road Dewas, 455001" launder itself
+  // back through detectConsignorAddressPrefix and come out looking like a
+  // "confirmed" canonical value, with no warning raised (canonicalAddress
+  // ended up equal to consignor.address, so the mismatch-warning branch never
+  // fired). Removing the AI-address fallback closes that hole: if the raw
+  // text has no confident 87A/78-86 evidence, the field is left as OCR-read
+  // (with an explicit "could not confidently match" warning) instead of
+  // silently re-trusting the AI's own guess.
+  const canonicalAddress = detectConsignorAddressPrefix(part1Text || '')
   if (!canonicalAddress) {
-    warnings.push('Consignor address prefix (87A vs 78-86) could not be confidently matched - address left as OCR-extracted rather than applying the deterministic rule.')
+    warnings.push('Consignor address prefix (87A vs 78-86) could not be confidently matched in the raw OCR text - address left as OCR-extracted rather than applying the deterministic rule.')
     return consignor
   }
   if (consignor.address !== canonicalAddress) {
@@ -810,6 +821,552 @@ function applyFiDocGuard(fiDoc, warnings) {
   return fiDoc
 }
 
+// -- RULE 1: GSTIN checksum validation + reconstruction -------------------------
+//
+// Standard Indian GSTIN checksum (mod-36, base-36 charset, alternating 1/2
+// weights over the first 14 characters). Used two ways below: (a) to confirm
+// an already-15-char GSTIN is genuinely valid before leaving it untouched,
+// and (b) to build reconstruction candidates from State Code + PAN, which are
+// individually far more reliable OCR reads (short, high-contrast fields) than
+// the 15-char GSTIN string itself.
+const GSTIN_CHARSET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+function computeGstinChecksum(str14) {
+  let sum = 0
+  for (let i = 0; i < 14; i++) {
+    const value = GSTIN_CHARSET.indexOf(str14[i])
+    if (value < 0) return null
+    const weight = i % 2 === 0 ? 1 : 2
+    const product = value * weight
+    sum += Math.floor(product / 36) + (product % 36)
+  }
+  return GSTIN_CHARSET[(36 - (sum % 36)) % 36]
+}
+
+function isValidGstin(gstin, stateCode, pan) {
+  if (typeof gstin !== 'string' || gstin.length !== 15) return false
+  if (stateCode && !gstin.startsWith(stateCode)) return false
+  if (pan && gstin.slice(2, 12) !== pan) return false
+  const checksum = computeGstinChecksum(gstin.slice(0, 14))
+  return checksum !== null && gstin[14] === checksum
+}
+
+// Positional-match similarity between a reconstructed candidate and whatever
+// OCR actually produced - purely a scoring heuristic, never used to invent
+// characters, only to pick which fully-computed candidate (if any) is close
+// enough to the OCR string to trust.
+function scoreCandidatePositions(candidate, ocrGstin) {
+  let score = 0
+  const len = Math.min(candidate.length, ocrGstin.length)
+  for (let i = 0; i < len; i++) if (candidate[i] === ocrGstin[i]) score++
+  return score
+}
+
+// Builds every plausible 15-char GSTIN from a trusted State Code + PAN pair
+// (entity code 1-9, "Z", computed checksum) and returns whichever one best
+// matches the OCR-read gstin string, but ONLY if the match is strong enough
+// to be confident it's the same document's GSTIN and not a coincidence -
+// otherwise returns null and the OCR value is left untouched (never guess).
+function reconstructGstin(stateCode, pan, ocrGstin) {
+  if (!/^\d{2}$/.test(stateCode || '')) return null
+  if (!/^[A-Z]{5}\d{4}[A-Z]$/.test(pan || '')) return null
+
+  let best = null
+  let bestScore = -1
+  for (const entityCode of '123456789') {
+    const first14 = stateCode + pan + entityCode + 'Z'
+    const checksum = computeGstinChecksum(first14)
+    if (!checksum) continue
+    const candidate = first14 + checksum
+    const score = scoreCandidatePositions(candidate, ocrGstin || '')
+    if (score > bestScore) {
+      bestScore = score
+      best = candidate
+    }
+  }
+  if (!best) return null
+
+  const first12Match =
+    (ocrGstin || '').length >= 12 &&
+    scoreCandidatePositions(best.slice(0, 12), ocrGstin.slice(0, 12)) >= 10
+  if (bestScore >= 11 || first12Match) return best
+  return null
+}
+
+// Repairs a single entity's (consignee/consignor) GSTIN in place. Can never
+// make a previously-correct GSTIN worse: an already-valid 15-char GSTIN is
+// left untouched (early return), reconstruction only runs off a trusted
+// State Code + PAN pair (never off the untrusted gstin string itself), and
+// a candidate is only adopted when it clears a high similarity bar against
+// what OCR actually read - otherwise the OCR value (including null) is kept
+// exactly as-is, since there is zero basis to invent one.
+function repairGstin(entity, label, warnings) {
+  if (!entity) return entity
+  const { gstin, stateCode, pan } = entity
+  if (!gstin) return entity // nothing to point to - never fabricate from scratch
+
+  if (isValidGstin(gstin, stateCode, pan)) return entity // already correct - leave alone
+
+  const candidate = reconstructGstin(stateCode, pan, gstin)
+  if (!candidate) return entity // no confident basis - leave OCR value untouched
+
+  warnings.push(
+    `${label} GSTIN corrected to "${candidate}" - reconstructed from State Code + PAN with a computed GSTIN checksum (deterministic rule); OCR had read "${gstin}".`
+  )
+  return { ...entity, gstin: candidate }
+}
+
+// -- RULE 2: Reason subtitle blacklist + recovery --------------------------------
+//
+// The page subtitle "Transportation of goods for reasons other than by way of
+// supply." is printed above the table on every single challan of this
+// template - it is boilerplate, not the document's actual Reason value. The
+// AI occasionally reads it into the Reason field because it's the nearest
+// "Reason"-shaped sentence on the page. This rule can never make a genuinely
+// correct Reason worse: it only fires when the value textually matches the
+// known boilerplate sentence, and even then it prefers a real recovered value
+// from the raw OCR "Reason" line over guessing - falling back to an honest
+// null (with a warning) rather than ever keeping the wrong subtitle.
+const REASON_SUBTITLE_PATTERN = /transportation\s+of\s+goo\w*s?\s*:?\s*for\s+reasons?\s+other\s+than/i
+const REASON_LINE_PATTERN = /UNIT\s*[-:.]?\s*0?\d.*$/im
+
+function applyReasonSubtitleRule(reason, part1Text, warnings) {
+  if (typeof reason !== 'string' || !REASON_SUBTITLE_PATTERN.test(reason)) return reason
+
+  const match = (part1Text || '').match(REASON_LINE_PATTERN)
+  if (match) {
+    const recovered = match[0].trim()
+    warnings.push(
+      `Reason corrected from the page subtitle ("${reason}") to "${recovered}" - recovered from the raw OCR "Reason" line (deterministic rule).`
+    )
+    return recovered
+  }
+
+  warnings.push(
+    `Reason value "${reason}" discarded (it is the printed page subtitle, not the actual Reason field) and set to null - no genuine Reason line could be recovered from the raw OCR text.`
+  )
+  return null
+}
+
+// -- RULE 3: FI Doc rescue --------------------------------------------------------
+//
+// Never overrides a non-null fiDoc - this only runs to fill in a gap the AI
+// left empty, using two independent, deterministic sources of evidence in
+// order of reliability.
+const FI_DOC_PATTERN = /\b1015\d{6}\b/g
+const IRN_AS_FI_DOC_PATTERN = /^\d{10}$/
+const FI_DOC_DIGIT_CONFUSION_PATTERN = /^1815\d{6}$/
+
+function applyFiDocRescueRule(fiDoc, irnNo, part1Text, warnings) {
+  if (fiDoc) return { fiDoc, irnNo } // already have a real value - never override
+
+  // (a) Regex fallback: every FI Doc on this template is a 10-digit number
+  // starting "1015". If exactly one distinct match exists in the raw text,
+  // it's unambiguous; multiple distinct matches means we can't tell which
+  // one is the real FI Doc, so skip rather than guess.
+  const matches = [...((part1Text || '').match(FI_DOC_PATTERN) || [])]
+  const distinct = [...new Set(matches)]
+  if (distinct.length === 1) {
+    warnings.push('FI Doc recovered from raw OCR text by pattern (deterministic rule).')
+    return { fiDoc: distinct[0], irnNo }
+  }
+
+  // (b) irnNo misattribution: a real IRN is a 64-character hash. If irnNo
+  // instead holds a pure 10-digit number, it is almost certainly the FI Doc
+  // value that landed in the wrong field - move it back.
+  if (typeof irnNo === 'string' && IRN_AS_FI_DOC_PATTERN.test(irnNo)) {
+    let recovered = irnNo
+    warnings.push(`FI Doc recovered from the irnNo field ("${irnNo}" is a 10-digit number, not a valid 64-character IRN hash) - value moved to FI Doc (deterministic rule).`)
+    if (FI_DOC_DIGIT_CONFUSION_PATTERN.test(recovered)) {
+      const corrected = '1015' + recovered.slice(4)
+      warnings.push(`FI Doc prefix corrected from "1815" to "1015" (known 0<->8 OCR digit confusion on this template's fixed prefix, deterministic rule).`)
+      recovered = corrected
+    }
+    return { fiDoc: recovered, irnNo: null }
+  }
+
+  return { fiDoc, irnNo }
+}
+
+// -- PART 2 POST-PROCESSING: rules A-F -------------------------------------------
+//
+// Deterministic repairs layered on top of the AI/grid line-items and totals,
+// same style as the RULE 1-3 header repairs above: pure functions, a warning
+// pushed for every automatic correction, never inventing a value with zero
+// OCR basis, never making an already-correct value worse.
+
+function parseMoney(s) {
+  if (s === null || s === undefined) return null
+  const n = parseFloat(String(s).replace(/,/g, '').trim())
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+function looksCleanInt(s) {
+  return typeof s === 'string' && /^\d{1,2}$/.test(s.trim())
+}
+
+function formatMoney(n) {
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function digitsOnly(s) {
+  return String(s ?? '').replace(/\D/g, '')
+}
+
+// Edit distance capped at 2 (we only ever care whether it's <=1) - avoids
+// pulling in a full Levenshtein implementation for a bounded check.
+function editDistanceAtMost1(a, b) {
+  if (a === b) return true
+  const la = a.length, lb = b.length
+  if (Math.abs(la - lb) > 1) return false
+  if (la === lb) {
+    let diff = 0
+    for (let i = 0; i < la; i++) if (a[i] !== b[i]) diff++
+    return diff <= 1
+  }
+  // one is exactly one character longer - check single insertion/deletion
+  const [shorter, longer] = la < lb ? [a, b] : [b, a]
+  let i = 0, j = 0, skipped = false
+  while (i < shorter.length && j < longer.length) {
+    if (shorter[i] === longer[j]) { i++; j++; continue }
+    if (skipped) return false
+    skipped = true
+    j++
+  }
+  return true
+}
+
+// "OCR-plausible": corrected digit string is a substring of (or contains) the
+// original's digit string, or the two differ by at most one digit
+// insertion/deletion/substitution.
+function isOcrPlausible(originalStr, correctedStr) {
+  const o = digitsOnly(originalStr)
+  const c = digitsOnly(correctedStr)
+  if (!o || !c) return false
+  if (o.includes(c) || c.includes(o)) return true
+  return editDistanceAtMost1(o, c)
+}
+
+// A money value on this template is always printed "1,234.00"/"900.00" -
+// correctly grouped commas + exactly 2 decimals. A field NOT in that shape
+// (e.g. "90000", "00") is itself evidence of an OCR misread (dropped the
+// decimal point/comma), independent of the arithmetic - used as the primary
+// tie-breaker below when more than one single-field correction is otherwise
+// arithmetically valid and digit-plausible.
+function isMoneyWellFormed(s) {
+  return typeof s === 'string' && /^\d{1,3}(,\d{3})*\.\d{2}$/.test(s.trim())
+}
+
+// Among several arithmetically-valid, digit-plausible single-field
+// corrections, picks the one most consistent with this codebase's known OCR
+// noise pattern (documented in cleanNumericField): garbage is glued onto an
+// otherwise-correct value, most often as an extra leading digit, so a
+// candidate that REMOVES digits (deletion) from an already-odd-looking
+// original is preferred over one that adds digits to an already-clean
+// original. Returns the winning candidate, or null if the tie can't be
+// broken (still ambiguous).
+function pickBestRowCandidate(candidates, fieldOriginals) {
+  if (candidates.length === 0) return null
+  if (candidates.length === 1) return candidates[0]
+
+  const ranked = candidates.map(cand => {
+    const originalStr = fieldOriginals[cand.field]
+    const malformedOriginal = cand.field === 'quantity' ? false : !isMoneyWellFormed(originalStr)
+    const delta = digitsOnly(cand.value).length - digitsOnly(originalStr).length
+    let rank
+    if (malformedOriginal) rank = 0
+    else if (delta < 0) rank = 1
+    else if (delta > 0) rank = 2
+    else rank = 3
+    return { ...cand, rank }
+  })
+
+  // Secondary tie-break: Quantity is the narrowest, most OCR-error-prone
+  // column on this template (documented in grid-line-items.js - the digit-only
+  // worker exists specifically because the shared prose worker regularly
+  // hallucinates on this column) - so a same-rank single-digit substitution
+  // there is more plausible than an equally-scored one in Basic/Amount.
+  const FIELD_PRIORITY = { quantity: 0, basic: 1, amount: 2 }
+  ranked.sort((x, y) => (x.rank - y.rank) || (FIELD_PRIORITY[x.field] - FIELD_PRIORITY[y.field]))
+
+  if (ranked.length >= 2 && ranked[0].rank === ranked[1].rank && ranked[0].field !== 'quantity') return null // still ambiguous
+  return ranked[0]
+}
+
+// -- RULE C: HSN/SAC junk normalization -------------------------------------------
+//
+// Strips a stray leading table-border pixel misread as "1" glued onto a real
+// 6-digit HSN code, trims trailing OCR noise, and nulls anything that still
+// doesn't look like a genuine HSN/SAC (letting applyHsnSacFallback recover it
+// from the rest of the table's consensus code instead).
+function normalizeHsnSacJunk(hsnSac, warnings, srNo) {
+  if (hsnSac === null || hsnSac === undefined) return hsnSac
+  const original = String(hsnSac)
+
+  const glued = original.match(/^1(99\d7\d\d)$/)
+  if (glued) {
+    warnings.push(`HSN/SAC (SR ${srNo ?? 'unknown'}) corrected from "${original}" to "${glued[1]}" - stripped a leading stray digit glued onto the real 6-digit code (deterministic rule).`)
+    return glued[1]
+  }
+
+  const embedded = original.match(/1?99\d7\d\d/)
+  if (embedded) {
+    let value = embedded[0]
+    if (value.length === 7 && /^1/.test(value)) value = value.slice(1)
+    if (value !== original) {
+      warnings.push(`HSN/SAC (SR ${srNo ?? 'unknown'}) corrected from "${original}" to "${value}" - trimmed OCR junk around the real code (deterministic rule).`)
+    }
+    return value
+  }
+
+  warnings.push(`HSN/SAC (SR ${srNo ?? 'unknown'}) value "${original}" discarded as unreadable junk (no valid 99_7__-shaped code found) - set to null so the table-consensus fallback can fill it (deterministic rule).`)
+  return null
+}
+
+function applyHsnJunkRule(items, warnings) {
+  return items.map(item => ({ ...item, hsnSac: normalizeHsnSacJunk(item.hsnSac, warnings, item.srNo) }))
+}
+
+// -- RULE B: row arithmetic repair (basic x quantity = amount) --------------------
+
+function deriveMissingField(basicStr, qtyStr, amountStr, warnings, srNo) {
+  const b = parseMoney(basicStr)
+  const q = looksCleanInt(qtyStr) ? parseInt(qtyStr.trim(), 10) : null
+  const a = parseMoney(amountStr)
+
+  const validCount = [b, q, a].filter(v => v !== null).length
+  if (validCount < 2) return { basic: basicStr, quantity: qtyStr, amount: amountStr } // no basis
+
+  if (b !== null && q !== null && a !== null) {
+    if (Math.abs(b * q - a) < 0.01) return { basic: basicStr, quantity: qtyStr, amount: amountStr } // consistent, leave alone
+
+    // Try correcting each single field in turn; adopt only if exactly one
+    // candidate makes the row exactly consistent AND is OCR-plausible.
+    const candidates = []
+    const candQ = a / b
+    if (Number.isInteger(candQ) && candQ >= 1 && candQ <= 99 && isOcrPlausible(qtyStr, String(candQ))) {
+      candidates.push({ field: 'quantity', value: String(candQ) })
+    }
+    const candB = a / q
+    if (candB > 0 && Math.round(candB * 100) === candB * 100 && isOcrPlausible(basicStr, formatMoney(candB))) {
+      candidates.push({ field: 'basic', value: formatMoney(candB) })
+    }
+    const candA = b * q
+    if (candA > 0 && isOcrPlausible(amountStr, formatMoney(candA))) {
+      candidates.push({ field: 'amount', value: formatMoney(candA) })
+    }
+
+    const before = { basic: basicStr, quantity: qtyStr, amount: amountStr }
+    const winner = pickBestRowCandidate(candidates, before)
+    if (winner) {
+      const { field, value } = winner
+      warnings.push(`Row (SR ${srNo ?? 'unknown'}) ${field} corrected from "${before[field]}" to "${value}" - basic x quantity = amount arithmetic repair (deterministic rule).`)
+      return { ...before, [field]: value }
+    }
+    return before // ambiguous or no valid correction - leave alone
+  }
+
+  // exactly one of the three missing/unparseable, other two valid
+  if (b !== null && q !== null && a === null) {
+    const cand = b * q
+    if (cand > 0) {
+      const value = formatMoney(cand)
+      warnings.push(`Row (SR ${srNo ?? 'unknown'}) amount filled as "${value}" from basic x quantity (deterministic rule).`)
+      return { basic: basicStr, quantity: qtyStr, amount: value }
+    }
+  } else if (b !== null && a !== null && q === null) {
+    const cand = a / b
+    if (Number.isInteger(cand) && cand >= 1 && cand <= 99) {
+      const value = String(cand)
+      warnings.push(`Row (SR ${srNo ?? 'unknown'}) quantity filled as "${value}" from amount / basic (deterministic rule).`)
+      return { basic: basicStr, quantity: value, amount: amountStr }
+    }
+  } else if (q !== null && a !== null && b === null) {
+    const cand = a / q
+    if (cand > 0 && Math.round(cand * 100) === cand * 100) {
+      const value = formatMoney(cand)
+      warnings.push(`Row (SR ${srNo ?? 'unknown'}) basic filled as "${value}" from amount / quantity (deterministic rule).`)
+      return { basic: value, quantity: qtyStr, amount: amountStr }
+    }
+  }
+
+  return { basic: basicStr, quantity: qtyStr, amount: amountStr }
+}
+
+function applyRowArithmeticRule(items, warnings) {
+  return items.map(item => {
+    const fixed = deriveMissingField(item.basic, item.quantity, item.amount, warnings, item.srNo)
+    return { ...item, ...fixed }
+  })
+}
+
+// -- RULE D: SR No sequence fill ---------------------------------------------------
+//
+// Template invariant: line-item SR numbers are consecutive integers starting
+// at 2 (row "1" is on the Part-1 page). Fills gaps only when every existing
+// clean-integer SR No is consistent with a single offset; falls back to the
+// template default (start=2) only when there are zero anchors at all; leaves
+// everything untouched if anchors conflict (can't trust any of them).
+function applySrNoSequenceRule(items, warnings) {
+  if (!Array.isArray(items) || items.length === 0) return items
+
+  const anchors = items
+    .map((item, index) => ({ index, value: looksCleanInt(item.srNo) ? parseInt(item.srNo.trim(), 10) : null }))
+    .filter(a => a.value !== null)
+
+  let startValue
+  if (anchors.length === 0) {
+    startValue = 2
+  } else {
+    const candidateStart = anchors[0].value - anchors[0].index
+    const consistent = anchors.every(a => a.value === candidateStart + a.index)
+    if (!consistent) return items // conflicting anchors - leave everything untouched
+    startValue = candidateStart
+  }
+
+  let filledCount = 0
+  const result = items.map((item, index) => {
+    if (looksCleanInt(item.srNo)) return item
+    filledCount++
+    return { ...item, srNo: String(startValue + index) }
+  })
+
+  if (filledCount > 0) {
+    const basis = anchors.length === 0
+      ? 'template default (no readable SR No anchors found in this document)'
+      : `${anchors.length} readable SR No anchor(s) in this table`
+    warnings.push(`SR No filled for ${filledCount} row(s) as a consecutive sequence starting at ${startValue}, based on ${basis} (deterministic rule).`)
+  }
+  return result
+}
+
+// -- RULE E: description normalization (conservative) ------------------------------
+
+const ITEM_PREFIX_TOKEN = /\b(SC|HOB|GSC|SHANK|STEP ENDMILL|ENDMILL|HOS|HOH|\$C|5C|<C|¢C?)\b/
+
+function normalizeDescriptionText(description) {
+  if (typeof description !== 'string' || !description) return description
+  let text = description
+  let changed = false
+
+  const tokenMatch = text.match(ITEM_PREFIX_TOKEN)
+  if (tokenMatch && tokenMatch.index <= 40) {
+    if (tokenMatch.index > 0) {
+      text = text.slice(tokenMatch.index)
+      changed = true
+    }
+  } else {
+    const stripped = text.replace(/^[\s|!'"·—–\-=~_*]+/, '')
+    if (stripped !== text) { text = stripped; changed = true }
+  }
+
+  // Leading "$C"/"5C"/"<C"/"¢C?" token -> "SC"
+  const before1 = text
+  text = text.replace(/^(\$C|5C|<C|¢C?)\b/, 'SC')
+  if (text !== before1) changed = true
+
+  // "HOH"/"HOS" -> "HOB" only when immediately followed by whitespace+ED/£D
+  const before2 = text
+  text = text.replace(/\b(HOH|HOS)(?=\s*(ED|£D))/g, 'HOB')
+  if (text !== before2) changed = true
+
+  // "£D" -> "ED"
+  const before3 = text
+  text = text.replace(/£D/g, 'ED')
+  if (text !== before3) changed = true
+
+  // "£" -> "E" when directly followed by a digit
+  const before4 = text
+  text = text.replace(/£(?=\d)/g, 'E')
+  if (text !== before4) changed = true
+
+  // "@" -> "Ø" when immediately followed by a digit
+  const before5 = text
+  text = text.replace(/@(?=\d)/g, 'Ø')
+  if (text !== before5) changed = true
+
+  // "%" between digit context and degree-like patterns -> "x"
+  const before6 = text
+  text = text.replace(/x%/g, 'x').replace(/%(?=\d+°)/g, 'x')
+  if (text !== before6) changed = true
+
+  return changed ? { text, changed: true } : { text, changed: false }
+}
+
+function applyDescriptionNormalizationRule(items, warnings) {
+  return items.map(item => {
+    const result = normalizeDescriptionText(item.description)
+    if (!result || typeof result !== 'object') return item
+    if (result.changed) {
+      warnings.push(`Description (SR ${item.srNo ?? 'unknown'}) normalized from "${item.description}" to "${result.text}" (deterministic OCR-noise cleanup rule).`)
+      return { ...item, description: result.text }
+    }
+    return item
+  })
+}
+
+// Single pipeline applying rules C, B, D, E in order (plus the HSN/SAC
+// table-consensus fallback at the end of the C step, so both the AI-text
+// path and the grid path benefit from it identically). Called from
+// analyzeDocument on the AI-parsed lineItems and from routes/documents.js on
+// the grid-extracted items, so both extraction paths get the same repairs.
+function normalizePart2LineItems(items, warnings) {
+  if (!Array.isArray(items) || items.length === 0) return items
+  let result = applyHsnJunkRule(items, warnings)
+  result = applyHsnSacFallback(result, warnings)
+  result = applyRowArithmeticRule(result, warnings)
+  result = applySrNoSequenceRule(result, warnings)
+  result = applyDescriptionNormalizationRule(result, warnings)
+  return result
+}
+
+// -- RULE A: totals arithmetic repair -----------------------------------------------
+//
+// Extends applyTotalsSanityRule: when Total Basic Amount and Total Amount are
+// both readable and Total Amount > Total Basic Amount, the difference is the
+// tax actually charged. On this template tax is always 100% IGST (interstate)
+// - so if IGST is missing, or holds the printed RATE "18.00" misread as an
+// amount, or disagrees with the arithmetic while CGST/SGST are empty/zero,
+// set IGST to the computed difference and zero-fill CGST/SGST.
+function repairTotalsArithmetic(totals, warnings) {
+  if (!totals) return totals
+  const tba = parseMoney(totals.totalBasicAmount)
+  const ta = parseMoney(totals.totalAmount)
+  if (tba === null || ta === null || ta <= tba) return totals
+
+  const expectedTax = Math.round((ta - tba) * 100) / 100
+  const igst = parseMoney(totals.igst)
+  const cgst = parseMoney(totals.cgst)
+  const sgst = parseMoney(totals.sgst)
+
+  let result = { ...totals }
+  let igstRepaired = false
+
+  const igstIsRateMisread = igst === 18 && expectedTax !== 18
+  const igstDisagreesWithZeroCgstSgst = igst !== null && Math.abs(igst - expectedTax) > 0.01 && (cgst === null || cgst === 0) && (sgst === null || sgst === 0)
+
+  if (igst === null || igstIsRateMisread || igstDisagreesWithZeroCgstSgst) {
+    const value = formatMoney(expectedTax)
+    warnings.push(`IGST set to "${value}" (= Total Amount "${totals.totalAmount}" - Total Basic Amount "${totals.totalBasicAmount}") - deterministic totals arithmetic repair${totals.igst ? `, replacing OCR-read "${totals.igst}"` : ''}.`)
+    result.igst = value
+    igstRepaired = true
+  }
+
+  const igstNowMatches = igstRepaired || (igst !== null && Math.abs(igst - expectedTax) <= 0.01)
+  if (igstNowMatches) {
+    if (result.cgst === null || result.cgst === undefined) {
+      result.cgst = '0.00'
+      warnings.push('CGST set to "0.00" - tax on this document is fully explained by IGST (interstate template, deterministic rule).')
+    }
+    if (result.sgst === null || result.sgst === undefined) {
+      result.sgst = '0.00'
+      warnings.push('SGST set to "0.00" - tax on this document is fully explained by IGST (interstate template, deterministic rule).')
+    }
+  }
+
+  return result
+}
+
 async function analyzeDocument({ part1Text, part2Text }) {
   const [part1Parsed, part2Parsed] = await Promise.all([
     part1Text ? runExtraction(PART1_SYSTEM, part1Text, 'consignee/consignor header') : Promise.resolve({}),
@@ -821,27 +1378,34 @@ async function analyzeDocument({ part1Text, part2Text }) {
     ...(Array.isArray(part2Parsed.warnings) ? part2Parsed.warnings : []),
   ]
 
-  part2Parsed.lineItems = applyHsnSacFallback(
+  part2Parsed.lineItems = normalizePart2LineItems(
     mergeDuplicateDescriptionRows(cleanLineItemNumbers(sanitizeLineItems(part2Parsed.lineItems, warnings)), warnings),
     warnings
   )
-  part2Parsed.totals = applyTotalsSanityRule(part2Parsed.totals, warnings)
+  part2Parsed.totals = repairTotalsArithmetic(applyTotalsSanityRule(part2Parsed.totals, warnings), warnings)
 
   // Header metadata usually comes from Part 1, but the automatic page split can
   // occasionally place a line or two on the Part 2 side - fall back to Part 2's
   // safety-net capture of the same fields when Part 1 didn't find them.
   const pick = (key) => part1Parsed[key] ?? part2Parsed[key] ?? null
 
+  let consignee = applyConsigneeAddressRule(part1Parsed.consignee || null, warnings)
+  let consignor = applyConsignorAddressRule(part1Parsed.consignor || null, part1Text, warnings)
+  consignee = repairGstin(consignee, 'Consignee', warnings)
+  consignor = repairGstin(consignor, 'Consignor', warnings)
+
+  const rescuedFiDoc = applyFiDocRescueRule(applyFiDocGuard(pick('fiDoc'), warnings), pick('irnNo'), part1Text, warnings)
+
   const part1Like = {
-    consignee: applyConsigneeAddressRule(part1Parsed.consignee || null, warnings),
-    consignor: applyConsignorAddressRule(part1Parsed.consignor || null, part1Text, warnings),
+    consignee,
+    consignor,
     invoiceNo: pick('invoiceNo'),
-    fiDoc: applyFiDocGuard(pick('fiDoc'), warnings),
+    fiDoc: rescuedFiDoc.fiDoc,
     challanDate: pick('challanDate'),
-    reason: pick('reason'),
+    reason: applyReasonSubtitleRule(pick('reason'), part1Text, warnings),
     poNo: applyPoNoRule(pick('poNo'), part1Text, warnings),
     requestNo: pick('requestNo'),
-    irnNo: pick('irnNo'),
+    irnNo: rescuedFiDoc.irnNo,
   }
   const part2Like = {
     lineItems: Array.isArray(part2Parsed.lineItems) ? part2Parsed.lineItems : [],
@@ -923,4 +1487,6 @@ module.exports = {
   answerQuestion,
   assembleDocumentViews,
   applyCorrection,
+  normalizePart2LineItems,
+  repairTotalsArithmetic,
 }

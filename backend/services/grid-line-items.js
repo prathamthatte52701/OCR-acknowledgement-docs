@@ -226,6 +226,20 @@ async function extractLineItemsViaGrid(buffer) {
       await digitWorker.terminate()
     }
 
+    // RULE F: column-shift guard - if the grid's column boundaries were
+    // mis-detected, an HSN/SAC code (shaped 99_7__) ends up sitting in the
+    // Quantity column instead of a small 1-2 digit number. When the majority
+    // of rows show this pattern, the whole table is shifted and every column
+    // in it is untrustworthy - bail out to null so the caller falls back to
+    // the standard AI-text path instead of adopting shifted data.
+    if (items.length >= 2) {
+      const hsnInQtyCount = items.filter(i => /99\d7\d\d/.test(String(i.quantity || ''))).length
+      if (hsnInQtyCount > items.length / 2) {
+        console.error('Grid line-item extraction discarded: majority of rows have an HSN/SAC-shaped value in the Quantity column (column boundaries mis-detected), falling back to standard path.')
+        return null
+      }
+    }
+
     return items.length ? items : null
   } catch (err) {
     console.error('Grid line-item extraction failed (Part 2 only, falling back):', err.message)

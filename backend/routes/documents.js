@@ -23,7 +23,7 @@ const Document = require('../models/Document')
 const Correction = require('../models/Correction')
 const { uploadBuffer, downloadBuffer, deleteFile } = require('../services/gridfs')
 const { extractParts, extractSingleImagePart } = require('../services/ocr')
-const { analyzeDocument, assembleDocumentViews, applyCorrection } = require('../services/groq')
+const { analyzeDocument, assembleDocumentViews, applyCorrection, normalizePart2LineItems } = require('../services/groq')
 const { extractLineItemsViaGrid } = require('../services/grid-line-items')
 
 const storage = multer.memoryStorage()
@@ -260,8 +260,11 @@ async function processDocumentTwoImages(docId, part1Buffer, part1MimeType, part2
     // file (PO No, HSN fallback). On any failure (no Python, bad grid, etc)
     // this returns null and groqResult is used completely unchanged.
     try {
-      const gridItems = await extractLineItemsViaGrid(part2Buffer)
+      let gridItems = await extractLineItemsViaGrid(part2Buffer)
       const existingCount = Array.isArray(groqResult.lineItems) ? groqResult.lineItems.length : 0
+      if (gridItems) {
+        gridItems = normalizePart2LineItems(gridItems, groqResult.warnings || (groqResult.warnings = []))
+      }
       if (gridItems && gridItems.length > existingCount) {
         const part1Like = {
           consignee: groqResult.consignee, consignor: groqResult.consignor,
