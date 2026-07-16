@@ -263,7 +263,7 @@ async function processDocumentTwoImages(docId, part1Buffer, part1MimeType, part2
       let gridItems = await extractLineItemsViaGrid(part2Buffer)
       const existingCount = Array.isArray(groqResult.lineItems) ? groqResult.lineItems.length : 0
       if (gridItems) {
-        gridItems = normalizePart2LineItems(gridItems, groqResult.warnings || (groqResult.warnings = []))
+        gridItems = normalizePart2LineItems(gridItems, groqResult.warnings || (groqResult.warnings = []), groqResult.totals)
       }
       if (gridItems && gridItems.length > existingCount) {
         const part1Like = {

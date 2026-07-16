@@ -585,6 +585,56 @@ function applyHsnSacFallback(items, warnings) {
   return items.map(item => item.hsnSac ? item : { ...item, hsnSac: commonCode })
 }
 
+// -- RULE T4: HSN/SAC majority consensus (extends/supersedes applyHsnSacFallback) --
+//
+// applyHsnSacFallback above only fires on unanimity (every readable code
+// agrees). This is stronger and more useful when a table has >=3 rows
+// carrying an HSN code and one code holds a strict majority (more than half):
+// minority codes that differ from the majority code in <=2 character
+// positions (same length only - a length mismatch is not a "close" OCR
+// misread on a fixed-width code, it's a different reading altogether and is
+// left alone) are normalized to the majority code, and null hsnSac cells are
+// filled with the majority code too. Never invents a majority where none
+// exists (ties/no-majority leave the table untouched).
+function hsnCharDiffCount(a, b) {
+  if (a.length !== b.length) return Infinity
+  let diff = 0
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff++
+  return diff
+}
+
+function applyHsnMajorityRule(items, warnings) {
+  if (!Array.isArray(items) || items.length === 0) return items
+
+  const withCode = items.filter(i => i.hsnSac)
+  if (withCode.length < 3) return items
+
+  const counts = new Map()
+  for (const i of withCode) counts.set(i.hsnSac, (counts.get(i.hsnSac) || 0) + 1)
+
+  let majorityCode = null
+  let majorityCount = 0
+  for (const [code, count] of counts) {
+    if (count > majorityCount) {
+      majorityCount = count
+      majorityCode = code
+    }
+  }
+  if (!majorityCode || majorityCount <= withCode.length / 2) return items // no strict majority - nothing to trust
+
+  return items.map(item => {
+    if (!item.hsnSac) {
+      warnings.push(`HSN/SAC (SR ${item.srNo ?? 'unknown'}) filled as "${majorityCode}" - majority code (${majorityCount}/${withCode.length} rows) across this table (deterministic rule).`)
+      return { ...item, hsnSac: majorityCode }
+    }
+    if (item.hsnSac !== majorityCode && hsnCharDiffCount(item.hsnSac, majorityCode) <= 2) {
+      warnings.push(`HSN/SAC (SR ${item.srNo ?? 'unknown'}) corrected from "${item.hsnSac}" to "${majorityCode}" - majority-code consensus (${majorityCount}/${withCode.length} rows), differs by <=2 character positions (deterministic rule).`)
+      return { ...item, hsnSac: majorityCode }
+    }
+    return item
+  })
+}
+
 function parseAmount(value) {
   if (value === null || value === undefined) return null
   const n = parseFloat(String(value).replace(/,/g, ''))
@@ -1013,6 +1063,16 @@ function digitsOnly(s) {
   return String(s ?? '').replace(/\D/g, '')
 }
 
+// Integer-rupee digits only (drops the ".00" decimal part, not just non-digit
+// separators) - used to compare "money shape" across a correction without the
+// decimal noise, e.g. moneyDigits("2,400.00") === "2400".
+function moneyDigits(s) {
+  if (s === null || s === undefined) return ''
+  const n = parseMoney(s)
+  if (n === null) return ''
+  return String(Math.round(n))
+}
+
 // Edit distance capped at 2 (we only ever care whether it's <=1) - avoids
 // pulling in a full Levenshtein implementation for a bounded check.
 function editDistanceAtMost1(a, b) {
@@ -1237,6 +1297,22 @@ function applySrNoSequenceRule(items, warnings) {
       : `${anchors.length} readable SR No anchor(s) in this table`
     warnings.push(`SR No filled for ${filledCount} row(s) as a consecutive sequence starting at ${startValue}, based on ${basis} (deterministic rule).`)
   }
+
+  // RULE T6: SR off-by-one. This template's Part-2 table always starts
+  // numbering at SR 2 (SR 1 lives on the Part-1 page) - a resulting sequence
+  // that is EXACTLY 1..N (consecutive, starting at 1, every row) is itself
+  // evidence the whole table got renumbered down by one, so shift every SR
+  // No up by 1 to 2..N+1. Only for N >= 2; any other resulting sequence
+  // (including a partial/anchor-conflicted one left untouched above) is
+  // never touched by this step.
+  if (result.length >= 2) {
+    const isExactOneToN = result.every((item, index) => looksCleanInt(item.srNo) && parseInt(item.srNo.trim(), 10) === index + 1)
+    if (isExactOneToN) {
+      warnings.push(`SR No sequence shifted from 1..${result.length} to 2..${result.length + 1} - this template's Part-2 table always starts at SR 2; a full 1..N sequence indicates renumbering (deterministic rule).`)
+      return result.map((item, index) => ({ ...item, srNo: String(index + 2) }))
+    }
+  }
+
   return result
 }
 
@@ -1280,6 +1356,20 @@ function normalizeDescriptionText(description) {
   text = text.replace(/£(?=\d)/g, 'E')
   if (text !== before4) changed = true
 
+  // RULE T5: standalone "HOR" -> "HOB" when followed by whitespace + ("ED" or
+  // "E0"+digits) - same OCR-noise family as the HOH/HOS -> HOB fix above,
+  // just a different confused first-letter-pair.
+  const beforeT5a = text
+  text = text.replace(/\bHOR(?=\s+(ED|E0\d))/g, 'HOB')
+  if (text !== beforeT5a) changed = true
+
+  // RULE T5: "E0" -> "ED" when directly followed by 2+ digits (e.g. "E023" ->
+  // "ED23"). Conservative - only the letter pair itself is corrected, no
+  // attempt to merge/reflow surrounding whitespace.
+  const beforeT5b = text
+  text = text.replace(/E0(?=\d{2,})/g, 'ED')
+  if (text !== beforeT5b) changed = true
+
   // "@" -> "Ø" when immediately followed by a digit
   const before5 = text
   text = text.replace(/@(?=\d)/g, 'Ø')
@@ -1305,16 +1395,24 @@ function applyDescriptionNormalizationRule(items, warnings) {
   })
 }
 
-// Single pipeline applying rules C, B, D, E in order (plus the HSN/SAC
-// table-consensus fallback at the end of the C step, so both the AI-text
-// path and the grid path benefit from it identically). Called from
-// analyzeDocument on the AI-parsed lineItems and from routes/documents.js on
-// the grid-extracted items, so both extraction paths get the same repairs.
-function normalizePart2LineItems(items, warnings) {
+// Single pipeline applying rules C, T4, B, T2, T3, D, E in order (T4 absorbs
+// the old unanimity-only HSN fallback into a majority-consensus rule; T2/T3
+// need `totals` as a trusted TBA anchor and are skipped silently when totals
+// isn't supplied). Called from analyzeDocument on the AI-parsed lineItems
+// (passing the already-repaired totals) and from routes/documents.js on the
+// grid-extracted items (passing the document's already-repaired totals), so
+// both extraction paths get the same repairs. `totals` is optional/backward
+// compatible - omitting it just skips the totals-anchored rules.
+function normalizePart2LineItems(items, warnings, totals = null) {
   if (!Array.isArray(items) || items.length === 0) return items
   let result = applyHsnJunkRule(items, warnings)
-  result = applyHsnSacFallback(result, warnings)
+  result = applyHsnMajorityRule(result, warnings)
   result = applyRowArithmeticRule(result, warnings)
+  if (totals) {
+    result = applyTbaAmountRepair(result, totals, warnings)
+    result = applyBasicAnchorAmountFill(result, totals, warnings)
+    result = applyQtyOneConsensusRule(result, totals, warnings)
+  }
   result = applySrNoSequenceRule(result, warnings)
   result = applyDescriptionNormalizationRule(result, warnings)
   return result
@@ -1367,6 +1465,268 @@ function repairTotalsArithmetic(totals, warnings) {
   return result
 }
 
+// -- RULE T1: IGST-by-rate repair (runs LAST, strongest anchor) --------------------
+//
+// The template always prints IGST at a fixed 18% rate, and Total Basic
+// Amount (TBA) is the most reliably-read total on the page (large, isolated,
+// unambiguous field). repairTotalsArithmetic above derives IGST from
+// Total Amount - TBA, which is blind to the case where BOTH totals were
+// misread but happen to still agree with each other (internally consistent,
+// externally wrong). Anchoring on TBA x 18% catches that case too, so this
+// rule runs AFTER repairTotalsArithmetic and wins whenever it disagrees.
+// Only fires when TBA itself parses to a positive number - it is the one
+// trusted anchor here, never a value derived from IGST/Total Amount.
+function repairIgstByRate(totals, warnings) {
+  if (!totals) return totals
+  const tba = parseMoney(totals.totalBasicAmount)
+  if (tba === null) return totals
+
+  const expectedIgst = Math.round(tba * 0.18 * 100) / 100
+  const igst = parseMoney(totals.igst)
+
+  let result = { ...totals }
+
+  if (igst === null || Math.abs(igst - expectedIgst) > 0.01) {
+    const value = formatMoney(expectedIgst)
+    warnings.push(`IGST set to "${value}" (= Total Basic Amount "${totals.totalBasicAmount}" x 18%, the printed IGST rate) - deterministic rate-anchored repair${totals.igst ? `, replacing "${totals.igst}"` : ''}.`)
+    result.igst = value
+  }
+
+  const expectedTA = Math.round((tba + expectedIgst) * 100) / 100
+  const ta = parseMoney(totals.totalAmount)
+  if (ta === null || Math.abs(ta - expectedTA) > 0.01) {
+    const value = formatMoney(expectedTA)
+    warnings.push(`Total Amount set to "${value}" (= Total Basic Amount "${totals.totalBasicAmount}" + IGST "${result.igst}") - deterministic rate-anchored repair${totals.totalAmount ? `, replacing "${totals.totalAmount}"` : ''}.`)
+    result.totalAmount = value
+  }
+
+  if (result.cgst === null || result.cgst === undefined) result.cgst = '0.00'
+  if (result.sgst === null || result.sgst === undefined) result.sgst = '0.00'
+
+  return result
+}
+
+// -- RULE T2: TBA-difference row amount repair (needs totals) ----------------------
+//
+// Total Basic Amount (TBA) is the most reliably-read total on the page, so
+// once it's trustworthy it can also confirm/repair individual row Amount
+// cells: the row amounts on this template always sum to TBA. Two cases:
+// (a) exactly one row's amount is missing - recover it as TBA minus the sum
+// of the rest; (b) every row amount parses but the sum doesn't match TBA -
+// look for exactly one row whose amount, shifted by the total shortfall,
+// becomes "OCR-plausible" (its digit string is a near-match of the
+// original's). Ambiguous cases (zero or multiple plausible rows) are left
+// untouched rather than guessing which row is wrong.
+function reRunRowArithmeticForIndex(items, index, warnings) {
+  const item = items[index]
+  const fixed = deriveMissingField(item.basic, item.quantity, item.amount, warnings, item.srNo)
+  const next = items.slice()
+  next[index] = { ...item, ...fixed }
+  return next
+}
+
+function applyTbaAmountRepair(items, totals, warnings) {
+  if (!Array.isArray(items) || items.length === 0 || !totals) return items
+  const tba = parseMoney(totals.totalBasicAmount)
+  if (tba === null) return items
+
+  const parsedAmounts = items.map(i => parseMoney(i.amount))
+  const missingIdx = parsedAmounts.reduce((acc, v, i) => (v === null ? [...acc, i] : acc), [])
+
+  // Case (a): exactly one row missing an amount, all others parse.
+  if (missingIdx.length === 1) {
+    const idx = missingIdx[0]
+    const sumOthers = parsedAmounts.reduce((sum, v, i) => (i === idx ? sum : sum + (v || 0)), 0)
+    const missingAmount = Math.round((tba - sumOthers) * 100) / 100
+    if (missingAmount > 0) {
+      const value = formatMoney(missingAmount)
+      warnings.push(`Row (SR ${items[idx].srNo ?? 'unknown'}) amount recovered as "${value}" from Total Basic Amount difference (deterministic rule).`)
+      let result = items.slice()
+      result[idx] = { ...result[idx], amount: value }
+      result = reRunRowArithmeticForIndex(result, idx, warnings)
+      return result
+    }
+    return items
+  }
+
+  // Case (b): all amounts parse but the sum disagrees with TBA.
+  if (missingIdx.length === 0) {
+    const sum = parsedAmounts.reduce((s, v) => s + v, 0)
+    const diff = Math.round((tba - sum) * 100) / 100
+    if (Math.abs(diff) <= 0.01) return items // already consistent - nothing to repair
+
+    // Classify each row's shifted-by-diff candidate into a plausibility tier
+    // against its own original amount string (moneyDigits, decimal stripped):
+    // tier 1 - a dropped leading/trailing digit (original is a proper prefix
+    // or suffix of the candidate's digit string, e.g. "400" -> "2400");
+    // tier 2 - a single substituted digit, same digit-length
+    // (editDistanceAtMost1). Anything else is not a candidate at all.
+    const candidates = []
+    items.forEach((item, i) => {
+      const candidate = Math.round((parsedAmounts[i] + diff) * 100) / 100
+      if (candidate <= 0) return
+      const candidateStr = formatMoney(candidate)
+      const o = moneyDigits(item.amount)
+      const c = moneyDigits(candidateStr)
+      if (!o || !c || o === c) return
+      let tier = null
+      if (c.length > o.length && (c.startsWith(o) || c.endsWith(o))) tier = 1
+      else if (o.length > c.length && (o.startsWith(c) || o.endsWith(c))) tier = 1
+      else if (o.length === c.length && editDistanceAtMost1(o, c)) tier = 2
+      if (tier !== null) candidates.push({ index: i, value: candidateStr, tier })
+    })
+
+    let winner = null
+    if (candidates.length === 1) {
+      winner = candidates[0]
+    } else if (candidates.length > 1) {
+      const lowestTier = Math.min(...candidates.map(c => c.tier))
+      const topTier = candidates.filter(c => c.tier === lowestTier)
+      if (topTier.length === 1) {
+        winner = topTier[0]
+      } else {
+        // Still tied - keep only candidates whose correction ACHIEVES row
+        // consistency (basic x quantity === amount, integer quantity) where
+        // the row was NOT already consistent before the change. A candidate
+        // that would break an already-consistent row is never the real fix.
+        const consistent = topTier.filter(cand => {
+          const item = items[cand.index]
+          const before = checkRowConsistency(item.basic, item.quantity, item.amount)
+          const after = checkRowConsistency(item.basic, item.quantity, cand.value)
+          return !before && after
+        })
+        if (consistent.length === 1) winner = consistent[0]
+      }
+    }
+
+    if (winner) {
+      const { index, value } = winner
+      warnings.push(`Row (SR ${items[index].srNo ?? 'unknown'}) amount corrected from "${items[index].amount}" to "${value}" - Total Basic Amount difference repair (deterministic rule).`)
+      let result = items.slice()
+      result[index] = { ...result[index], amount: value }
+      result = reRunRowArithmeticForIndex(result, index, warnings)
+      return result
+    }
+    return items // zero or still-ambiguous candidates - leave alone
+  }
+
+  return items // more than one row missing an amount - not enough basis
+}
+
+// True when basic x quantity === amount, i.e. the row is internally
+// arithmetic-consistent - used only to compare before/after a candidate
+// correction, never to decide anything on its own. When quantity is missing
+// (not a printed clean integer), it's treated as derivable: consistency
+// holds if amount/basic itself resolves to a clean integer 1-99 (the same
+// thing rule B would derive), since a missing quantity is not itself
+// evidence of inconsistency - only an unresolvable one is.
+function checkRowConsistency(basic, quantity, amount) {
+  const b = parseMoney(basic)
+  const a = parseMoney(amount)
+  if (b === null || a === null) return false
+  if (looksCleanInt(quantity)) {
+    const q = parseInt(String(quantity).trim(), 10)
+    return Math.abs(b * q - a) < 0.01
+  }
+  const derivedQ = a / b
+  return Number.isInteger(derivedQ) && derivedQ >= 1 && derivedQ <= 99
+}
+
+// -- RULE T3b: basic-anchored amount fill (needs totals) ---------------------------
+//
+// Companion to T3 below, for the opposite gap shape: Basic is present but
+// Amount (and Quantity) are missing. Only fires when every readable Quantity
+// on the document is 1 AND a tentative fill (Amount = Basic wherever Amount
+// is missing) makes every row amount sum to Total Basic Amount - that sum
+// match is the proof that Quantity really is 1 on the missing rows too and
+// that Basic really does equal Amount there, not a guess.
+function applyBasicAnchorAmountFill(items, totals, warnings) {
+  if (!Array.isArray(items) || items.length === 0 || !totals) return items
+  const tba = parseMoney(totals.totalBasicAmount)
+  if (tba === null) return items
+
+  const readableQtys = items.map(i => (looksCleanInt(i.quantity) ? parseInt(i.quantity.trim(), 10) : null)).filter(v => v !== null)
+  if (readableQtys.length === 0 || !readableQtys.every(v => v === 1)) return items
+
+  const fillIdx = []
+  items.forEach((item, i) => {
+    const hasAmount = parseMoney(item.amount) !== null
+    const hasBasic = parseMoney(item.basic) !== null
+    if (!hasAmount && hasBasic) fillIdx.push(i)
+  })
+  if (fillIdx.length === 0) return items
+
+  const tentative = items.map(item => {
+    const a = parseMoney(item.amount)
+    return a !== null ? a : parseMoney(item.basic)
+  })
+  if (tentative.some(v => v === null)) return items // some row has neither - no basis
+  const sumTentative = tentative.reduce((s, v) => s + v, 0)
+  if (Math.abs(sumTentative - tba) > 0.01) return items // guard: consensus not proven
+
+  const result = items.slice()
+  for (const idx of fillIdx) {
+    const value = formatMoney(parseMoney(result[idx].basic))
+    warnings.push(`Row (SR ${result[idx].srNo ?? 'unknown'}) amount filled as "${value}" and quantity as "1" - Basic column sums to Total Basic Amount and every readable Quantity is 1 (deterministic consensus rule).`)
+    result[idx] = {
+      ...result[idx],
+      amount: value,
+      quantity: looksCleanInt(result[idx].quantity) ? result[idx].quantity : '1',
+    }
+  }
+  return result
+}
+
+// -- RULE T3: qty=1 consensus fill (needs totals) -----------------------------------
+//
+// Fires only once the row-amount column is PROVEN correct (every amount
+// parses and the row amounts already sum to TBA), and every readable
+// Quantity in the document reads as exactly 1 - on this template that means
+// this document's whole table is single-quantity rows, so a row missing
+// both Basic and Quantity can be safely filled: Basic = Amount (since
+// Basic x 1 = Amount) and Quantity = "1". Independent of that consensus,
+// also handles the narrower case where Basic and Amount already read
+// identically and Quantity is the only gap - itself strong evidence
+// Quantity = 1 for that row alone.
+function applyQtyOneConsensusRule(items, totals, warnings) {
+  if (!Array.isArray(items) || items.length === 0) return items
+  let result = items
+
+  // Narrow sub-case: basic == amount (both parse) and quantity missing.
+  result = result.map(item => {
+    if (looksCleanInt(item.quantity)) return item
+    const b = parseMoney(item.basic)
+    const a = parseMoney(item.amount)
+    if (b !== null && a !== null && Math.abs(b - a) < 0.01) {
+      warnings.push(`Row (SR ${item.srNo ?? 'unknown'}) quantity filled as "1" - Basic and Amount read identically, which is only possible when Quantity = 1 (deterministic rule).`)
+      return { ...item, quantity: '1' }
+    }
+    return item
+  })
+
+  // Consensus sub-case: needs proven-correct amount column against TBA.
+  if (!totals) return result
+  const tba = parseMoney(totals.totalBasicAmount)
+  if (tba === null) return result
+
+  const parsedAmounts = result.map(i => parseMoney(i.amount))
+  if (parsedAmounts.some(v => v === null)) return result
+  const sum = parsedAmounts.reduce((s, v) => s + v, 0)
+  if (Math.abs(sum - tba) > 0.01) return result // amount column not proven correct
+
+  const readableQtys = result.map(i => (looksCleanInt(i.quantity) ? parseInt(i.quantity.trim(), 10) : null)).filter(v => v !== null)
+  if (readableQtys.length === 0 || !readableQtys.every(v => v === 1)) return result
+
+  return result.map(item => {
+    const hasBasic = parseMoney(item.basic) !== null
+    const hasQty = looksCleanInt(item.quantity)
+    const hasAmount = parseMoney(item.amount) !== null
+    if (hasBasic || hasQty || !hasAmount) return item
+    warnings.push(`Row (SR ${item.srNo ?? 'unknown'}) row total proven by Total Basic Amount; every readable Quantity on this document is 1 - filled Basic=Amount, Quantity=1 (deterministic consensus rule).`)
+    return { ...item, basic: formatMoney(parseMoney(item.amount)), quantity: '1' }
+  })
+}
+
 async function analyzeDocument({ part1Text, part2Text }) {
   const [part1Parsed, part2Parsed] = await Promise.all([
     part1Text ? runExtraction(PART1_SYSTEM, part1Text, 'consignee/consignor header') : Promise.resolve({}),
@@ -1378,11 +1738,20 @@ async function analyzeDocument({ part1Text, part2Text }) {
     ...(Array.isArray(part2Parsed.warnings) ? part2Parsed.warnings : []),
   ]
 
-  part2Parsed.lineItems = normalizePart2LineItems(
-    mergeDuplicateDescriptionRows(cleanLineItemNumbers(sanitizeLineItems(part2Parsed.lineItems, warnings)), warnings),
+  // Totals repair runs BEFORE line-item rules so TBA/IGST are already sane by
+  // the time T2/T3 use TBA as an anchor. T1 (repairIgstByRate) runs last in
+  // this chain since it's the strongest/most reliable anchor (fixed 18% rate
+  // off Total Basic Amount) and should win over the weaker TA-derived repair.
+  part2Parsed.totals = repairIgstByRate(
+    repairTotalsArithmetic(applyTotalsSanityRule(part2Parsed.totals, warnings), warnings),
     warnings
   )
-  part2Parsed.totals = repairTotalsArithmetic(applyTotalsSanityRule(part2Parsed.totals, warnings), warnings)
+
+  part2Parsed.lineItems = normalizePart2LineItems(
+    mergeDuplicateDescriptionRows(cleanLineItemNumbers(sanitizeLineItems(part2Parsed.lineItems, warnings)), warnings),
+    warnings,
+    part2Parsed.totals
+  )
 
   // Header metadata usually comes from Part 1, but the automatic page split can
   // occasionally place a line or two on the Part 2 side - fall back to Part 2's
@@ -1489,4 +1858,5 @@ module.exports = {
   applyCorrection,
   normalizePart2LineItems,
   repairTotalsArithmetic,
+  repairIgstByRate,
 }
