@@ -4,18 +4,17 @@ import api from '../utils/api'
 import challanRouteVisual from '../assets/transport-bill-route-visual.png'
 
 const features = [
-  { icon: 'UP', title: 'Upload', desc: 'Upload delivery challans in JPG, JPEG, PNG, or PDF.' },
-  { icon: 'OC', title: 'Auto-Split OCR', desc: 'Automatically splits each page into header and line-items sections, then extracts text from both.' },
-  { icon: 'AI', title: 'AI Analysis', desc: 'Identify consignee, consignor, invoice details, line items, and GST tax totals.' },
-  { icon: 'CH', title: 'Chat', desc: 'Ask questions and get answers about your delivery challans.' },
-  { icon: 'ED', title: 'Edit', desc: 'Review and correct extracted field values instantly.' },
-  { icon: 'DL', title: 'Download', desc: 'Download originals or remove documents when needed.' },
+  { icon: 'UP', title: 'Upload', desc: 'Upload acknowledgement documents in JPG, JPEG, PNG, or PDF.' },
+  { icon: 'OC', title: 'Header OCR', desc: 'Crops to the top header section of the page and extracts text from just that region for maximum accuracy.' },
+  { icon: 'AI', title: 'AI Analysis', desc: 'Identify the document number and date automatically - Tax Invoice or Delivery Challan.' },
+  { icon: 'CH', title: 'Chat', desc: 'Ask questions and get answers about your documents.' },
+  { icon: 'ED', title: 'Edit', desc: 'Review and correct extracted number/date instantly.' },
+  { icon: 'XL', title: 'Excel Export', desc: 'Export verified rows into a running Excel workbook with one click.' },
 ]
 
 const supportedTypes = [
+  'Tax Invoice',
   'Delivery Challan',
-  'Consignor/Consignee Bill',
-  'Rule 55 CGST Challan',
 ]
 
 function formatDate(dateStr) {
@@ -108,7 +107,7 @@ function HeroIllustration() {
     <div className="relative min-h-[270px] overflow-hidden rounded-[28px] border border-blue-300/12 bg-slate-950/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
       <img
         src={challanRouteVisual}
-        alt="AI delivery challan route extraction visual"
+        alt="AI acknowledgement extraction visual"
         className="absolute inset-0 h-full w-full object-cover object-center"
       />
       <div className="absolute inset-0 bg-gradient-to-r from-slate-950/15 via-transparent to-slate-950/30" />
@@ -298,14 +297,14 @@ export default function Dashboard() {
           <div className="max-w-3xl">
             <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-blue-300/20 bg-blue-500/10 px-4 py-2 text-[12.6px] font-bold uppercase tracking-[0.18em] text-blue-200">
               <span className="h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_18px_rgba(103,232,249,0.9)]" />
-              AI-Powered Delivery Challan Intelligence
+              AI-Powered Acknowledgement Intelligence
             </div>
             <h1 className="text-4xl font-black leading-[1.07] tracking-[-0.04em] text-white sm:text-5xl xl:text-[56px]">
-              Extract. Verify. Understand.
-              <span className="block">Delivery challans in <span className="text-blue-400 drop-shadow-[0_0_28px_rgba(59,130,246,0.55)]">seconds.</span></span>
+              Extract. Verify. Export.
+              <span className="block">Acknowledgements in <span className="text-blue-400 drop-shadow-[0_0_28px_rgba(59,130,246,0.55)]">seconds.</span></span>
             </h1>
             <p className="mt-5 max-w-2xl text-base leading-7 text-slate-400">
-              Upload Consignor-Consignee delivery challans and let AI extract party details, invoice info, line items, and GST totals instantly.
+              Upload Tax Invoice or Delivery Challan acknowledgements and let AI extract the document number and date instantly - then export everything to Excel.
             </p>
             <div className="mt-7 flex flex-col gap-3 sm:flex-row">
               <Link
@@ -327,7 +326,7 @@ export default function Dashboard() {
         </section>
 
         <section className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard icon="TD" label="Total Documents" value={stats.total} helper="Delivery challans in workspace" color="blue" />
+          <StatCard icon="TD" label="Total Documents" value={stats.total} helper="Acknowledgements in workspace" color="blue" />
           <StatCard icon="OK" label="Processed" value={stats.processed} helper="Ready for review and chat" color="green" />
           <StatCard icon="ER" label="Failed" value={stats.failed} helper="Needs reprocess or review" color="red" />
           <StatCard icon="24" label="Processed Today" value={stats.processedToday} helper="Completed in today's run" color="violet" />
@@ -338,7 +337,7 @@ export default function Dashboard() {
             <div className="mb-5 flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-xl font-black tracking-tight text-white">Recent Documents</h2>
-                <p className="mt-1 text-[14.7px] text-slate-500">Latest delivery challans processed by ChallanIntel AI</p>
+                <p className="mt-1 text-[14.7px] text-slate-500">Latest acknowledgements processed by AckIntel AI</p>
               </div>
               <Link to="/documents" className="shrink-0 rounded-full border border-blue-300/20 bg-blue-500/10 px-4 py-2 text-[12.6px] font-black uppercase tracking-[0.14em] text-blue-200 no-underline transition-colors hover:bg-blue-500/15">
                 View all
@@ -353,8 +352,8 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="rounded-2xl border border-dashed border-blue-300/14 bg-white/[0.025] px-5 py-10 text-center">
-                <p className="text-[14.7px] font-bold text-slate-300">No delivery challans uploaded yet.</p>
-                <p className="mt-2 text-[14.7px] text-slate-500">Upload a bill to see recent document activity here.</p>
+                <p className="text-[14.7px] font-bold text-slate-300">No documents uploaded yet.</p>
+                <p className="mt-2 text-[14.7px] text-slate-500">Upload an acknowledgement to see recent document activity here.</p>
               </div>
             )}
           </div>
@@ -370,7 +369,7 @@ export default function Dashboard() {
           <div className="mb-5 flex items-end justify-between gap-4">
             <div>
               <p className="text-[12.6px] font-black uppercase tracking-[0.22em] text-blue-300/80">Capabilities</p>
-              <h2 className="mt-2 text-2xl font-black tracking-tight text-white">What ChallanIntel AI does</h2>
+              <h2 className="mt-2 text-2xl font-black tracking-tight text-white">What AckIntel AI does</h2>
             </div>
           </div>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -386,7 +385,7 @@ export default function Dashboard() {
               <span className="grid h-12 w-12 place-items-center rounded-2xl border border-blue-300/15 bg-blue-500/10 text-[12.6px] font-black text-blue-200">DOC</span>
               <div>
                 <h2 className="text-lg font-black text-white">Supported Document Types</h2>
-                <p className="mt-1 text-[14.7px] text-slate-500">Focused intake for delivery challan operations.</p>
+                <p className="mt-1 text-[14.7px] text-slate-500">Focused intake for acknowledgement processing.</p>
               </div>
             </div>
             <div className="flex flex-wrap gap-2">

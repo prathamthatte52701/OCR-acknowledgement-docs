@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import api from '../utils/api'
+import api, { exportDocument } from '../utils/api'
 import CorrectionModal from '../components/CorrectionModal'
 import LoadingState from '../components/LoadingState'
 import ErrorMessage from '../components/ErrorMessage'
@@ -104,19 +104,9 @@ export default function DocumentDetailPage() {
   async function handleExport() {
     setExporting(true)
     try {
-      const res = await api.post(`/documents/${id}/export`, {}, { responseType: 'blob' })
-      const url = window.URL.createObjectURL(new Blob([res.data]))
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'export.xlsx'
-      a.click()
-      window.URL.revokeObjectURL(url)
+      await exportDocument(id)
     } catch (err) {
-      if (err.response?.data?.error === 'NO_ACTIVE_FILE') {
-        alert('No active Excel file. Start one from the Documents page first.')
-      } else {
-        alert(err.userMessage || 'Export failed.')
-      }
+      alert(err.userMessage || 'Export failed.')
     } finally {
       setExporting(false)
     }

@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 const ACCEPTED_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'application/pdf']
 const IMAGE_ONLY_TYPES = ['image/jpeg', 'image/jpg', 'image/png']
 const MAX_SIZE_MB = 5
-const documentTypes = ['Delivery Challan', 'Consignor/Consignee Bill', 'Rule 55 CGST Challan']
+const documentTypes = ['Tax Invoice', 'Delivery Challan']
 
 // `compact` + `label` render a smaller box for the two-image (Part 1/Part 2)
 // upload flow; `imageOnly` restricts to JPG/PNG (no PDF) for that same flow,
@@ -144,7 +144,7 @@ export default function UploadCard({ onFileSelect, disabled, compact = false, la
             ))}
           </div>
 
-          <p className="text-sm font-medium text-slate-500">Upload delivery challan - JPG, JPEG, PNG, PDF - max 5MB</p>
+          <p className="text-sm font-medium text-slate-500">Upload acknowledgement - JPG, JPEG, PNG, PDF - max 5MB</p>
         </div>
       </div>
 

@@ -17,11 +17,11 @@ export default function AppLayout() {
         <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between px-4 sm:px-6 lg:px-10">
           <NavLink to="/" className="group flex items-center gap-3 text-white no-underline">
             <span className="grid h-9 w-9 place-items-center rounded-xl border border-blue-400/30 bg-blue-500/15 text-[14.7px] font-black text-blue-200 shadow-[0_0_28px_rgba(37,99,235,0.35)] transition-colors group-hover:border-cyan-300/50">
-              TI
+              AI
             </span>
             <span className="leading-tight">
-              <span className="block text-base font-bold tracking-tight">ChallanIntel AI</span>
-              <span className="block text-[10.5px] font-medium uppercase tracking-[0.22em] text-slate-500">Delivery Challan Command Center</span>
+              <span className="block text-base font-bold tracking-tight">AckIntel AI</span>
+              <span className="block text-[10.5px] font-medium uppercase tracking-[0.22em] text-slate-500">Acknowledgement Command Center</span>
             </span>
           </NavLink>
 
@@ -108,7 +108,7 @@ export default function AppLayout() {
 
       {/* Footer */}
       <footer className="border-t border-blue-400/10 bg-slate-950/80 py-3 text-center text-[12.6px] text-slate-600">
-        ChallanIntel AI - Consignor/Consignee Delivery Challan Intelligence
+        AckIntel AI - Acknowledgement Document Intelligence
       </footer>
     </div>
   )

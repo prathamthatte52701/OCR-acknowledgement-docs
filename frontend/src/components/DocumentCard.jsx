@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import api from '../utils/api'
+import { exportDocument } from '../utils/api'
 
 const statusStyles = {
   uploaded: 'border-sky-400/25 bg-sky-400/10 text-sky-300',
@@ -31,19 +31,9 @@ function displayNumber(doc) {
 
 async function handleExport(docId) {
   try {
-    const res = await api.post(`/documents/${docId}/export`, {}, { responseType: 'blob' })
-    const url = window.URL.createObjectURL(new Blob([res.data]))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'export.xlsx'
-    a.click()
-    window.URL.revokeObjectURL(url)
+    await exportDocument(docId)
   } catch (err) {
-    if (err.response?.data?.error === 'NO_ACTIVE_FILE' || err.response?.status === 400) {
-      alert('No active Excel file. Start one from the Documents page first.')
-    } else {
-      alert('Export failed.')
-    }
+    alert(err.userMessage || 'Export failed.')
   }
 }
 

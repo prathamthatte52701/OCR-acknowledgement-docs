@@ -1,7 +1,7 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "description": "DocIntel backend - business document intelligence",
+  "description": "AckIntel AI backend - acknowledgement document intelligence",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
