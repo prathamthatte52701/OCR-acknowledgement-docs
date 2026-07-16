@@ -34,17 +34,43 @@ function formatNumberCell({ documentType, taxInvoiceNo, referenceNo, number }) {
   return number || null
 }
 
-async function appendRow(filename, row) {
+// Exports are serialized through this promise chain - two parallel exports
+// would otherwise read-modify-write the same workbook and lose a row.
+let _exportChain = Promise.resolve()
+
+function appendRow(filename, row) {
+  const job = _exportChain.then(() => appendRowNow(filename, row))
+  // Keep the chain alive even when a job fails - the next export must not
+  // inherit this one's rejection.
+  _exportChain = job.catch(() => {})
+  return job
+}
+
+async function appendRowNow(filename, row) {
   ensureExportDir()
   const target = filePath(filename)
   if (!fs.existsSync(target)) {
-    throw new Error(`Excel file not found: ${path.basename(target)}`)
+    // Settings can point at a file that was deleted from disk - recreate it
+    // with the header row instead of dead-ending the export.
+    await createNewFile(filename)
   }
-  const workbook = new ExcelJS.Workbook()
-  await workbook.xlsx.readFile(target)
-  const sheet = workbook.getWorksheet('Exports') || workbook.worksheets[0]
-  sheet.addRow([row.documentType, formatNumberCell(row), row.date, row.timestamp])
-  await workbook.xlsx.writeFile(target)
+  // Windows locks the workbook while it is open in Excel - both the read and
+  // the write below fail with EBUSY/EPERM in that case, so the whole
+  // read-modify-write is wrapped, not just the write.
+  try {
+    const workbook = new ExcelJS.Workbook()
+    await workbook.xlsx.readFile(target)
+    const sheet = workbook.getWorksheet('Exports') || workbook.worksheets[0]
+    sheet.addRow([row.documentType, formatNumberCell(row), row.date, row.timestamp])
+    await workbook.xlsx.writeFile(target)
+  } catch (err) {
+    if (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES') {
+      const friendly = new Error(`"${path.basename(target)}" is open in Excel. Close it and try exporting again.`)
+      friendly.code = 'FILE_LOCKED'
+      throw friendly
+    }
+    throw err
+  }
   return target
 }
 

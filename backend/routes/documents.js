@@ -423,6 +423,9 @@ router.post('/:id/export', async (req, res) => {
     res.download(target)
   } catch (err) {
     console.error('Export error:', err)
+    if (err.code === 'FILE_LOCKED') {
+      return res.status(409).json({ error: err.message })
+    }
     res.status(500).json({ error: 'Failed to export document.' })
   }
 })
