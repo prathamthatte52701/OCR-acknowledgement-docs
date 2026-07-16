@@ -3,6 +3,14 @@ const express = require('express')
 const mongoose = require('mongoose')
 const cors = require('cors')
 const path = require('path')
+const dns = require('dns')
+
+// This machine's default DNS resolver intermittently fails to resolve the
+// mongodb+srv SRV record (ECONNREFUSED on _mongodb._tcp lookups) even though
+// the record itself is valid - Google/Cloudflare DNS resolve it fine. Setting
+// these as fallback resolvers fixes SRV connection strings without affecting
+// anything else.
+dns.setServers(['8.8.8.8', '1.1.1.1', ...dns.getServers()])
 
 const documentsRouter = require('./routes/documents')
 const chatRouter = require('./routes/chat')

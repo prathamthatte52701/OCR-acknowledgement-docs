@@ -4,17 +4,19 @@ import api from '../utils/api'
 import UploadCard from '../components/UploadCard'
 import challanRouteVisual from '../assets/transport-bill-route-visual.png'
 
+const DOCUMENT_TYPES = ['Tax Invoice', 'Delivery Challan']
+
 function LogisticsUploadIllustration() {
   return (
     <div className="relative mt-10 hidden min-h-[310px] overflow-hidden rounded-[30px] border border-blue-300/10 bg-slate-950/20 lg:block">
       <img
         src={challanRouteVisual}
-        alt="Delivery challan upload route extraction visual"
+        alt="Acknowledgement upload visual"
         className="absolute inset-0 h-full w-full object-cover object-center"
       />
       <div className="absolute inset-0 bg-gradient-to-t from-slate-950/55 via-transparent to-slate-950/10" />
       <div className="absolute left-5 top-5 rounded-full border border-blue-300/20 bg-blue-500/12 px-4 py-2 text-[10.5px] font-bold uppercase tracking-[0.18em] text-blue-100 backdrop-blur-xl">
-        Delivery Challan Intake
+        Acknowledgement Intake
       </div>
     </div>
   )
@@ -26,13 +28,11 @@ function GuidelineCard() {
       <div className="flex gap-4">
         <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-blue-300/20 bg-blue-500/15 text-[14.7px] font-black text-blue-200 shadow-[0_0_28px_rgba(37,99,235,0.24)]">i</span>
         <div className="space-y-2 text-[14.7px] leading-6 text-slate-400">
-          <p>- Accepted formats: JPG, JPEG, PNG</p>
-          <p>- Maximum file size: 5 MB per image</p>
-          <p>- English language documents only</p>
-          <p>- Crop the photo into two pieces yourself: Part 1 (Consignee/Consignor header) and Part 2 (Uncoded RGP line-items table)</p>
-          <p>- Each part is OCR'd independently for much more reliable extraction than one combined photo</p>
-          <p>- Only printed text is extracted; handwriting, stamps, and signatures are ignored</p>
-          <p>- Processing may take 20-70 seconds depending on document complexity</p>
+          <p>- Accepted formats: JPG, JPEG, PNG, PDF</p>
+          <p>- Maximum file size: 5 MB</p>
+          <p>- Pick the document type first - it decides which field(s) get extracted</p>
+          <p>- Only the Number and Date from the top header are extracted; items, GST, stamps, and signatures are ignored</p>
+          <p>- Processing may take a few seconds</p>
         </div>
       </div>
     </div>
@@ -67,8 +67,8 @@ function UploadProcessingState({ message }) {
 }
 
 export default function UploadPage() {
-  const [part1File, setPart1File] = useState(null)
-  const [part2File, setPart2File] = useState(null)
+  const [file, setFile] = useState(null)
+  const [documentType, setDocumentType] = useState(DOCUMENT_TYPES[0])
   const [status, setStatus] = useState('idle') // idle | uploading | processing | done | error
   const [error, setError] = useState('')
   const pollRef = useRef(null)
@@ -81,16 +81,16 @@ export default function UploadPage() {
   }, [])
 
   async function handleUpload() {
-    if (!part1File || !part2File) return
+    if (!file) return
     setStatus('uploading')
     setError('')
 
     try {
       const formData = new FormData()
-      formData.append('part1Image', part1File)
-      formData.append('part2Image', part2File)
+      formData.append('document', file)
+      formData.append('documentType', documentType)
 
-      const res = await api.post('/documents/upload-parts', formData, {
+      const res = await api.post('/documents/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
 
@@ -99,7 +99,6 @@ export default function UploadPage() {
 
       setStatus('processing')
 
-      // Poll until processed or failed
       if (pollRef.current) clearInterval(pollRef.current)
       let attempts = 0
       pollRef.current = setInterval(async () => {
@@ -113,7 +112,7 @@ export default function UploadPage() {
             clearInterval(pollRef.current)
             pollRef.current = null
             setStatus('done')
-            setTimeout(() => navigate(`/documents/${docId}/chat/part1`), 800)
+            setTimeout(() => navigate(`/documents/${docId}`), 800)
           } else if (doc?.uploadStatus === 'failed') {
             clearInterval(pollRef.current)
             pollRef.current = null
@@ -144,14 +143,12 @@ export default function UploadPage() {
       clearInterval(pollRef.current)
       pollRef.current = null
     }
-    setPart1File(null)
-    setPart2File(null)
+    setFile(null)
     setStatus('idle')
     setError('')
   }
 
   const isProcessing = status === 'uploading' || status === 'processing'
-  const bothSelected = part1File && part2File
 
   return (
     <div className="relative min-h-full overflow-hidden bg-[#020817]">
@@ -160,15 +157,14 @@ export default function UploadPage() {
 
       <main className="relative mx-auto grid max-w-[1440px] gap-8 px-4 py-8 sm:px-6 lg:min-h-[calc(100vh-94px)] lg:grid-cols-[0.75fr_1.25fr] lg:items-center lg:px-10 lg:py-12">
         <section className="max-w-xl">
-          <p className="mb-6 text-[14.7px] font-bold text-blue-400">Upload Document - Part 1 &amp; Part 2</p>
+          <p className="mb-6 text-[14.7px] font-bold text-blue-400">Upload Document</p>
           <h1 className="text-4xl font-black leading-[1.16] tracking-[-0.035em] text-white sm:text-5xl xl:text-[56px]">
             Extract. Verify.
-            <span className="block">Understand.</span>
-            <span className="block">Delivery challans in</span>
-            <span className="block text-blue-400 drop-shadow-[0_0_28px_rgba(59,130,246,0.55)]">seconds.</span>
+            <span className="block">Number and date,</span>
+            <span className="block text-blue-400 drop-shadow-[0_0_28px_rgba(59,130,246,0.55)]">in seconds.</span>
           </h1>
           <p className="mt-6 max-w-lg text-base leading-8 text-slate-400">
-            Crop your delivery challan photo into two pieces - the Consignee/Consignor header, and the Uncoded RGP line-items table - and upload them separately. Each piece is OCR'd on its own, which is far more reliable than auto-splitting one combined photo.
+            Pick the document type, upload one file, and the header number and date are extracted automatically.
           </p>
           <LogisticsUploadIllustration />
         </section>
@@ -176,36 +172,40 @@ export default function UploadPage() {
         <section className="rounded-[32px] border border-blue-300/18 bg-slate-900/62 p-5 shadow-[0_34px_120px_rgba(2,8,23,0.55),inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-xl sm:p-7">
           {isProcessing ? (
             <UploadProcessingState
-              message={status === 'uploading' ? 'Uploading Part 1 and Part 2...' : 'Running OCR + AI analysis on both parts...'}
+              message={status === 'uploading' ? 'Uploading document...' : 'Running OCR + AI analysis...'}
             />
           ) : status === 'done' ? (
             <div className="flex min-h-[460px] flex-col items-center justify-center gap-4 rounded-[26px] border border-emerald-300/18 bg-emerald-400/8 px-5 py-16 text-center">
               <div className="grid h-20 w-20 place-items-center rounded-full border border-emerald-300/25 bg-emerald-400/15 text-[14.7px] font-black text-emerald-200 shadow-[0_0_45px_rgba(16,185,129,0.22)]">Done</div>
               <div>
-                <p className="text-xl font-black text-white">Delivery challan processed</p>
-                <p className="mt-2 text-[14.7px] text-slate-500">Redirecting to chat...</p>
+                <p className="text-xl font-black text-white">Document processed</p>
+                <p className="mt-2 text-[14.7px] text-slate-500">Redirecting...</p>
               </div>
             </div>
           ) : (
             <div className="space-y-5">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <UploadCard
-                  compact
-                  label="Part 1 - Consignee/Consignor header"
-                  imageOnly
-                  onFileSelect={setPart1File}
-                  disabled={isProcessing}
-                  selectedFile={part1File}
-                />
-                <UploadCard
-                  compact
-                  label="Part 2 - Uncoded RGP line-items table"
-                  imageOnly
-                  onFileSelect={setPart2File}
-                  disabled={isProcessing}
-                  selectedFile={part2File}
-                />
+              <div>
+                <p className="mb-2 text-sm font-bold text-blue-300">Document Type</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {DOCUMENT_TYPES.map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => setDocumentType(type)}
+                      disabled={isProcessing}
+                      className={`rounded-2xl border px-4 py-3 text-[14.7px] font-bold transition-all ${
+                        documentType === type
+                          ? 'border-blue-300/60 bg-blue-500/15 text-blue-100 shadow-[0_0_28px_rgba(37,99,235,0.24)]'
+                          : 'border-white/10 bg-white/[0.03] text-slate-400 hover:border-blue-300/30 hover:text-slate-200'
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  ))}
+                </div>
               </div>
+
+              <UploadCard onFileSelect={setFile} disabled={isProcessing} />
 
               {error && (
                 <div className="flex items-start gap-3 rounded-2xl border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-[14.7px] text-rose-200">
@@ -216,14 +216,14 @@ export default function UploadPage() {
                 </div>
               )}
 
-              {(part1File || part2File) && (
+              {file && (
                 <div className="flex flex-col gap-3 sm:flex-row">
                   <button
                     onClick={handleUpload}
-                    disabled={isProcessing || !bothSelected}
+                    disabled={isProcessing}
                     className="flex-1 rounded-2xl bg-gradient-to-r from-blue-600 to-cyan-500 px-5 py-3.5 text-[14.7px] font-black text-white shadow-[0_18px_45px_rgba(37,99,235,0.3)] transition-all hover:-translate-y-0.5 hover:shadow-[0_22px_60px_rgba(37,99,235,0.42)] disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {bothSelected ? 'Upload & Process' : 'Select both Part 1 and Part 2 to continue'}
+                    Upload & Process
                   </button>
                   <button
                     onClick={handleReset}

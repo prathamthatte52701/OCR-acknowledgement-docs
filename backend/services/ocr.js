@@ -43,6 +43,105 @@ async function extractSingleImagePart(buffer, mimeType, partLabel) {
   return result
 }
 
+// -- Header-only extraction (Acknowledgement flow) ------------------------------
+// Crops to the top ~28% of the page (Reference No./Delivery Challan No. + date
+// row always lives there on both templates) before OCR, so Tesseract never has
+// to fight the item table/stamps/signatures below it. Reuses the existing
+// single-part OCR path (extractSingleImagePart with 'part1' label) unchanged -
+// a pre-cropped image just makes its job easier.
+const HEADER_CROP_RATIO = 0.28
+
+async function extractHeaderText(buffer, mimeType) {
+  try {
+    if (mimeType === 'application/pdf') return await extractHeaderFromPDF(buffer)
+    return await extractHeaderFromImage(buffer, mimeType)
+  } catch (err) {
+    console.error('Header OCR error:', err.message)
+    return null
+  }
+}
+
+async function extractHeaderFromImage(buffer, mimeType) {
+  const sharp = require('sharp')
+  const meta = await sharp(buffer).metadata()
+  if (!meta.width || !meta.height) return null
+  const cropped = await sharp(buffer)
+    .extract({ left: 0, top: 0, width: meta.width, height: Math.max(1, Math.round(meta.height * HEADER_CROP_RATIO)) })
+    .toBuffer()
+  const result = await extractSingleImagePart(cropped, mimeType, 'part1')
+  return result?.part1Text || null
+}
+
+async function extractHeaderFromPDF(buffer) {
+  try {
+    const { PDFParse } = require('pdf-parse')
+    const parser = new PDFParse({ data: buffer })
+    let text
+    try {
+      const result = await parser.getText()
+      text = (result.pages || []).map(p => p.text).join('\n').trim()
+    } finally {
+      await parser.destroy()
+    }
+    if (text && text.length > 20) {
+      const headerText = await reconstructHeaderRowsByPosition(buffer)
+      return cleanOCRText(headerText || text)
+    }
+  } catch (err) {
+    console.error('pdf-parse error (header):', err.message)
+  }
+
+  // No text layer - scanned PDF. Rasterize page 1, crop to the top band, OCR it.
+  console.log('Header OCR: PDF has no text layer, rasterizing page 1.')
+  const { pngBuffer } = await renderPdfPageToPng(buffer)
+  return await extractHeaderFromImage(pngBuffer, 'image/png')
+}
+
+// Same row-grouping as reconstructTextByPosition, but keeps only rows whose y
+// falls in the top HEADER_CROP_RATIO of the page - so the header number/date
+// row survives even when it isn't in visual document order in the raw text.
+async function reconstructHeaderRowsByPosition(buffer) {
+  try {
+    const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs')
+    const path = require('path')
+    const { pathToFileURL } = require('url')
+    const standardFontDataUrl = pathToFileURL(
+      path.join(path.dirname(require.resolve('pdfjs-dist/package.json')), 'standard_fonts') + path.sep
+    ).href
+
+    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer), standardFontDataUrl, disableWorker: true }).promise
+    const page = await doc.getPage(1)
+    const viewport = page.getViewport({ scale: 1 })
+    const content = await page.getTextContent()
+
+    const items = content.items
+      .map(it => ({ str: it.str, x: it.transform[4], y: it.transform[5] }))
+      .filter(it => it.str && it.str.trim())
+    if (!items.length) return null
+
+    // PDF y-axis increases upward - the top of the page is the HIGH end of y.
+    const cutoffY = viewport.height * (1 - HEADER_CROP_RATIO)
+    const headerItems = items.filter(it => it.y >= cutoffY)
+    if (!headerItems.length) return null
+
+    const Y_TOLERANCE = 3
+    const rows = []
+    for (const item of headerItems) {
+      let row = rows.find(r => Math.abs(r.y - item.y) <= Y_TOLERANCE)
+      if (!row) { row = { y: item.y, items: [] }; rows.push(row) }
+      row.items.push(item)
+    }
+    rows.sort((a, b) => b.y - a.y)
+    rows.forEach(r => r.items.sort((a, b) => a.x - b.x))
+
+    const text = rows.map(r => r.items.map(i => i.str).join(' ')).join('\n').trim()
+    return text || null
+  } catch (err) {
+    console.error('Header position-based reconstruction failed (falling back):', err.message)
+    return null
+  }
+}
+
 function runOCRWorker(imagePath, singlePartMode = null) {
   return new Promise((resolve) => {
     const workerPath = path.join(__dirname, 'ocr-worker.js')
@@ -262,4 +361,4 @@ function cleanOCRText(text) {
     .trim()
 }
 
-module.exports = { extractParts, extractSingleImagePart }
+module.exports = { extractParts, extractSingleImagePart, extractHeaderText }

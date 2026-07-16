@@ -2,17 +2,11 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import api from '../utils/api'
 import DocumentChat from '../components/DocumentChat'
-import CorrectionModal from '../components/CorrectionModal'
-import AddRowModal from '../components/AddRowModal'
 
 function formatDateTime(dateStr) {
   if (!dateStr) return '-'
   return new Date(dateStr).toLocaleString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
   })
 }
 
@@ -21,17 +15,6 @@ function getFileType(mimeType) {
   if (mimeType === 'application/pdf') return 'PDF'
   if (mimeType.startsWith('image/')) return 'Image'
   return mimeType.split('/')[1]?.toUpperCase() || 'File'
-}
-
-function firstValue(...values) {
-  const value = values.find(item => item !== undefined && item !== null && item !== '')
-  return value ?? '-'
-}
-
-function formatAmount(value) {
-  if (value === undefined || value === null || value === '' || value === '-') return '-'
-  const raw = String(value)
-  return raw.toLowerCase().includes('rs') ? raw : `Rs ${raw}`
 }
 
 function StatusBadge({ status }) {
@@ -96,15 +79,10 @@ function InsightRow({ label, value }) {
   )
 }
 
-// Document Context + Quick Insights stacked together in one left sidebar
-// (instead of opposite sides of the screen) so the chat panel in the middle
-// can take up most of the width - important once chat responses start
-// including wide tables (Uncoded RGP, Taxes).
 function SidebarPanel({ doc }) {
-  const consignee = firstValue(doc.consignee?.name)
-  const consignor = firstValue(doc.consignor?.name)
-  const invoiceNo = firstValue(doc.invoiceNo)
-  const totalAmount = formatAmount(firstValue(doc.totals?.totalAmount))
+  const number = doc.documentType === 'Tax Invoice'
+    ? [doc.taxInvoiceNo, doc.referenceNo].filter(Boolean).join(' / ') || '-'
+    : doc.number || '-'
 
   return (
     <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto rounded-2xl border border-blue-300/15 bg-slate-950/58 p-4 shadow-[0_24px_90px_rgba(2,8,23,0.34)] backdrop-blur-xl">
@@ -115,7 +93,7 @@ function SidebarPanel({ doc }) {
             <DocumentIcon />
             <div className="min-w-0">
               <h2 className="truncate text-base font-black text-white">{doc.autoName}</h2>
-              <p className="mt-1 overflow-hidden text-ellipsis text-[14.7px] text-blue-100/70">{doc.documentType || 'Delivery Challan'} Chat</p>
+              <p className="mt-1 overflow-hidden text-ellipsis text-[14.7px] text-blue-100/70">{doc.documentType} Chat</p>
             </div>
           </div>
 
@@ -126,11 +104,8 @@ function SidebarPanel({ doc }) {
           <div className="my-5 h-px bg-gradient-to-r from-transparent via-slate-600/60 to-transparent" />
 
           <div className="space-y-4">
-            <MetaRow icon="ID" label="Uploaded by" value="Business Owner" />
             <MetaRow icon="ON" label="Uploaded on" value={formatDateTime(doc.createdAt)} />
             <MetaRow icon="TY" label="File type" value={getFileType(doc.mimeType)} />
-            <MetaRow icon="PG" label="Pages" value={doc.pageCount || doc.pages || 1} />
-            <MetaRow icon="LN" label="Language" value="English" />
           </div>
         </div>
       </section>
@@ -138,34 +113,21 @@ function SidebarPanel({ doc }) {
       <section>
         <PanelTitle icon="IN">Quick Insights</PanelTitle>
         <div className="rounded-2xl border border-blue-300/14 bg-slate-900/46 p-4">
-          <InsightRow label="Consignee" value={consignee} />
-          <InsightRow label="Consignor" value={consignor} />
-          <InsightRow label="Invoice No" value={invoiceNo} />
-          <InsightRow label="Total Amount" value={totalAmount} />
+          <InsightRow label="Number" value={number} />
+          <InsightRow label="Date" value={doc.date || '-'} />
           <Link
             to={`/documents/${doc._id}`}
             className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-blue-300/20 bg-slate-950/28 px-3 py-2.5 text-[14.7px] font-bold text-blue-200 no-underline transition-colors hover:border-blue-300/45 hover:bg-blue-500/10"
           >
-            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-              <path d="M7 17 17 7" />
-              <path d="M8 7h9v9" />
-            </svg>
             View Details
           </Link>
         </div>
       </section>
 
-      <div className="rounded-2xl border border-blue-300/12 bg-blue-500/[0.045] p-4 text-[14.7px] text-slate-400">
-        <div className="flex items-start gap-3">
-          <MiniIcon>TP</MiniIcon>
-          <p><span className="font-semibold text-slate-300">Tip:</span> Use the buttons below the chat for Full Summary, Consignee Details, Consigner Details, Uncoded RGP, and Taxes - or ask anything about this document directly.</p>
-        </div>
-      </div>
-
       <div className="mt-auto rounded-2xl border border-blue-300/12 bg-blue-500/[0.045] p-4 text-[14.7px] text-slate-400">
         <div className="flex items-start gap-3">
           <MiniIcon>AI</MiniIcon>
-          <p>AI responses are generated from the uploaded document content.</p>
+          <p>AI responses are generated from the extracted document number/date only.</p>
         </div>
       </div>
     </aside>
@@ -202,15 +164,12 @@ function PageErrorState({ message }) {
 }
 
 export default function DocumentChatPage() {
-  const { id, part: rawPart } = useParams()
-  const part = rawPart === 'part2' ? 'part2' : rawPart === 'part1' ? 'part1' : undefined
+  const { id } = useParams()
   const [doc, setDoc] = useState(null)
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [chatSending, setChatSending] = useState(false)
-  const [correctionField, setCorrectionField] = useState(null)
-  const [addingRow, setAddingRow] = useState(false)
   const sendingRef = useRef(false)
 
   useEffect(() => {
@@ -268,48 +227,6 @@ export default function DocumentChatPage() {
     }
   }
 
-  async function handleCorrect(field, newValue) {
-    try {
-      await api.patch(`/documents/${id}/fields/${field.normalizedKey}/correct`, {
-        fieldLabel: field.label,
-        fieldKey: field.normalizedKey,
-        oldValue: field.value,
-        newValue,
-      })
-      setCorrectionField(null)
-      const res = await api.get(`/documents/${id}`)
-      setDoc(res.data?.document)
-    } catch {
-      alert('Failed to save correction.')
-    }
-  }
-
-  async function handleAddRow(values) {
-    try {
-      await api.post(`/documents/${id}/line-items`, values)
-      setAddingRow(false)
-      const res = await api.get(`/documents/${id}`)
-      setDoc(res.data?.document)
-    } catch {
-      alert('Failed to add row.')
-    }
-  }
-
-  // Detail-view buttons (Full Summary, About, Consignee, Consigner, Uncoded RGP)
-  // append to the chat log like a real conversation instead of replacing a single
-  // panel - nothing disappears when another button is clicked. These render
-  // locally from the current `doc` state (no AI call), so they always show
-  // live data, including any edits made after they were added to the history.
-  function handleDetailAction(detailType, label) {
-    const now = new Date().toISOString()
-    const base = Date.now()
-    setMessages(prev => [
-      ...prev,
-      { role: 'user', message: label, createdAt: now, _localId: `${base}-u` },
-      { role: 'assistant', kind: 'detail', detailType, message: '', createdAt: now, _localId: `${base}-a` },
-    ])
-  }
-
   if (loading) return <PageLoadingState />
   if (error) return <PageErrorState message={error} />
   if (!doc) return null
@@ -334,22 +251,11 @@ export default function DocumentChatPage() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <div className="min-w-0">
                 <h1 className="truncate text-2xl font-black tracking-tight text-white">{doc.autoName}</h1>
-                <p className="mt-1 truncate text-[14.7px] text-slate-400">
-                  {doc.documentType || 'Delivery Challan'} Chat
-                  {part && <span className="ml-2 rounded-full border border-blue-300/25 bg-blue-500/10 px-2 py-0.5 text-[11.6px] font-bold text-blue-200">{part === 'part1' ? 'Part 1' : 'Part 2'}</span>}
-                </p>
+                <p className="mt-1 truncate text-[14.7px] text-slate-400">{doc.documentType} Chat</p>
               </div>
 
               <div className="flex items-center gap-2">
                 <StatusBadge status={doc.uploadStatus} />
-                {part && (
-                  <Link
-                    to={`/documents/${id}/chat/${part === 'part1' ? 'part2' : 'part1'}`}
-                    className="inline-flex items-center rounded-xl border border-blue-300/20 bg-slate-900/60 px-4 py-2 text-[14.7px] font-bold text-blue-200 no-underline transition-colors hover:border-blue-300/45 hover:bg-blue-500/10"
-                  >
-                    Switch to {part === 'part1' ? 'Part 2' : 'Part 1'}
-                  </Link>
-                )}
                 <Link
                   to={`/documents/${id}`}
                   className="inline-flex items-center rounded-xl border border-blue-300/20 bg-slate-900/60 px-4 py-2 text-[14.7px] font-bold text-blue-200 no-underline transition-colors hover:border-blue-300/45 hover:bg-blue-500/10"
@@ -384,31 +290,12 @@ export default function DocumentChatPage() {
                 onSendMessage={handleSendMessage}
                 loading={false}
                 externalSending={chatSending}
-                doc={doc}
                 onRate={handleRate}
-                onCorrect={(field) => setCorrectionField(field)}
-                onAddRow={() => setAddingRow(true)}
-                onDetailAction={handleDetailAction}
-                part={part}
               />
             </div>
           )}
         </section>
       </div>
-
-      {correctionField && (
-        <CorrectionModal
-          field={correctionField}
-          onSave={handleCorrect}
-          onClose={() => setCorrectionField(null)}
-        />
-      )}
-
-      <AddRowModal
-        open={addingRow}
-        onSave={handleAddRow}
-        onClose={() => setAddingRow(false)}
-      />
     </div>
   )
 }

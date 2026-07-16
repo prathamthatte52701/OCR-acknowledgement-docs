@@ -91,17 +91,34 @@ export default function DocumentsPage() {
               {loading ? 'Loading documents...' : `${documents.length} document${documents.length !== 1 ? 's' : ''}`}
             </p>
           </div>
-          <Link
-            to="/upload"
-            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-blue-600 to-blue-500 px-5 py-3 text-[14.7px] font-black text-white no-underline shadow-[0_18px_45px_rgba(37,99,235,0.34)] transition-all hover:-translate-y-0.5 hover:shadow-[0_22px_60px_rgba(37,99,235,0.45)] focus:outline-none focus:ring-2 focus:ring-blue-300/60"
-          >
-            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-              <path d="M12 16V4" />
-              <path d="M7 9l5-5 5 5" />
-              <path d="M20 16v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3" />
-            </svg>
-            Upload New
-          </Link>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={async () => {
+                const filename = window.prompt('Name for the new Excel export file:')
+                if (!filename || !filename.trim()) return
+                try {
+                  await api.post('/documents/new-excel-file', { filename: filename.trim() })
+                  alert(`New Excel file "${filename.trim()}.xlsx" is now active.`)
+                } catch (err) {
+                  alert(err.userMessage || 'Failed to start a new Excel file.')
+                }
+              }}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-blue-300/20 bg-slate-900/60 px-5 py-3 text-[14.7px] font-bold text-blue-200 transition-all hover:border-blue-300/45 hover:bg-blue-500/10"
+            >
+              Start New Excel File
+            </button>
+            <Link
+              to="/upload"
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-blue-600 to-blue-500 px-5 py-3 text-[14.7px] font-black text-white no-underline shadow-[0_18px_45px_rgba(37,99,235,0.34)] transition-all hover:-translate-y-0.5 hover:shadow-[0_22px_60px_rgba(37,99,235,0.45)] focus:outline-none focus:ring-2 focus:ring-blue-300/60"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                <path d="M12 16V4" />
+                <path d="M7 9l5-5 5 5" />
+                <path d="M20 16v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3" />
+              </svg>
+              Upload New
+            </Link>
+          </div>
         </div>
 
         {loading ? (

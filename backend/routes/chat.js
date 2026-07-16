@@ -41,16 +41,15 @@ router.post('/', async (req, res) => {
       message: message.trim(),
     })
 
-    const ocrText = [doc.part1OcrTextHidden, doc.part2OcrTextHidden].filter(Boolean).join('\n\n')
-
     // Generate answer
     let answer
     try {
       answer = await answerQuestion(message.trim(), {
-        fields: doc.extractedFields,
-        tables: doc.extractedTables,
-        summaryPoints: doc.summaryPoints,
-        ocrText,
+        documentType: doc.documentType,
+        taxInvoiceNo: doc.taxInvoiceNo,
+        referenceNo: doc.referenceNo,
+        number: doc.number,
+        date: doc.date,
       })
     } catch (err) {
       answer = 'AI analysis is unavailable. Please check the Groq API key or try again later.'

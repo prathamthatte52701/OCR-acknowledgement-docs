@@ -19,12 +19,17 @@ async function drainQueue() {
   try { resolve(await fn()) } catch (e) { reject(e) }
   finally { _processing = false; drainQueue() }
 }
+
 const Document = require('../models/Document')
 const Correction = require('../models/Correction')
+const Settings = require('../models/Settings')
+const ExportedRow = require('../models/ExportedRow')
 const { uploadBuffer, downloadBuffer, deleteFile } = require('../services/gridfs')
-const { extractParts, extractSingleImagePart } = require('../services/ocr')
-const { analyzeDocument, assembleDocumentViews, applyCorrection, normalizePart2LineItems } = require('../services/groq')
-const { extractLineItemsViaGrid } = require('../services/grid-line-items')
+const { extractHeaderText } = require('../services/ocr')
+const { extractHeader } = require('../services/groq')
+const excel = require('../services/excel')
+
+const DOCUMENT_TYPES = ['Tax Invoice', 'Delivery Challan']
 
 const storage = multer.memoryStorage()
 const upload = multer({
@@ -48,36 +53,6 @@ function uploadMiddleware(req, res, next) {
         return res.status(400).json({ error: 'File size must be 5 MB or less.' })
       }
       return res.status(400).json({ error: err.field || 'Only JPG, JPEG, PNG, and PDF files are allowed.' })
-    }
-    return res.status(400).json({ error: err.message || 'Upload failed.' })
-  })
-}
-
-// Two-image upload flow - Part 1 (header) and Part 2 (line-items) uploaded
-// separately, already manually cropped by the user. Images only (no PDF) -
-// this flow is for photographed/scanned bills, matching how a user would crop
-// a photo into two pieces.
-const uploadPartsStorage = multer.memoryStorage()
-const uploadParts = multer({
-  storage: uploadPartsStorage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter(req, file, cb) {
-    const allowed = ['image/jpeg', 'image/jpg', 'image/png']
-    if (!allowed.includes(file.mimetype)) {
-      return cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'Only JPG, JPEG, and PNG files are allowed for Part 1/Part 2 uploads.'))
-    }
-    cb(null, true)
-  },
-})
-
-function uploadPartsMiddleware(req, res, next) {
-  uploadParts.fields([{ name: 'part1Image', maxCount: 1 }, { name: 'part2Image', maxCount: 1 }])(req, res, (err) => {
-    if (!err) return next()
-    if (err instanceof multer.MulterError) {
-      if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(400).json({ error: 'Each file must be 5 MB or less.' })
-      }
-      return res.status(400).json({ error: err.field || 'Only JPG, JPEG, and PNG files are allowed.' })
     }
     return res.status(400).json({ error: err.message || 'Upload failed.' })
   })
@@ -130,6 +105,11 @@ router.post('/upload', uploadMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded.' })
     }
 
+    const documentType = req.body.documentType
+    if (!DOCUMENT_TYPES.includes(documentType)) {
+      return res.status(400).json({ error: 'documentType must be "Tax Invoice" or "Delivery Challan".' })
+    }
+
     const { buffer, mimetype, originalname, size } = req.file
     const detectedMimeType = detectMimeType(buffer)
     if (!mimeMatchesUpload(mimetype, detectedMimeType)) {
@@ -155,11 +135,12 @@ router.post('/upload', uploadMiddleware, async (req, res) => {
       mimeType: mimetype,
       size,
       gridFsFileId,
+      documentType,
       uploadStatus: 'uploaded',
     })
 
     // Queue processing - only 1 OCR job runs at a time to prevent OOM
-    enqueue(() => processDocument(doc._id, buffer, mimetype)).catch(err => {
+    enqueue(() => processDocument(doc._id, buffer, mimetype, documentType)).catch(err => {
       console.error('Background processing error:', err.message)
     })
 
@@ -170,160 +151,10 @@ router.post('/upload', uploadMiddleware, async (req, res) => {
   }
 })
 
-// POST /api/documents/upload-parts - two-image flow (Part 1 + Part 2 uploaded
-// separately, already manually cropped). Runs the same extraction pipeline as
-// the single-image flow (extractSingleImagePart -> analyzeDocument), just with
-// no auto-split step since there's nothing to split.
-router.post('/upload-parts', uploadPartsMiddleware, async (req, res) => {
+async function processDocument(docId, buffer, mimeType, documentType) {
   try {
-    const part1File = req.files?.part1Image?.[0]
-    const part2File = req.files?.part2Image?.[0]
-    if (!part1File || !part2File) {
-      return res.status(400).json({ error: 'Both Part 1 and Part 2 images are required.' })
-    }
-
-    for (const file of [part1File, part2File]) {
-      const detected = detectMimeType(file.buffer)
-      if (!mimeMatchesUpload(file.mimetype, detected)) {
-        return res.status(400).json({ error: 'File content does not match the selected file type.' })
-      }
-    }
-
-    const autoName = nameFromOriginalFilename(part1File.originalname)
-    const [part1FileId, part2FileId] = await Promise.all([
-      uploadBuffer(part1File.buffer, part1File.originalname, part1File.mimetype),
-      uploadBuffer(part2File.buffer, part2File.originalname, part2File.mimetype),
-    ])
-
-    const doc = await Document.create({
-      autoName,
-      originalFilename: part1File.originalname,
-      mimeType: part1File.mimetype,
-      size: part1File.size + part2File.size,
-      part1FileId,
-      part1OriginalFilename: part1File.originalname,
-      part2FileId,
-      part2OriginalFilename: part2File.originalname,
-      uploadStatus: 'uploaded',
-    })
-
-    enqueue(() => processDocumentTwoImages(doc._id, part1File.buffer, part1File.mimetype, part2File.buffer, part2File.mimetype)).catch(err => {
-      console.error('Background processing error:', err.message)
-    })
-
-    res.status(201).json({ document: doc })
-  } catch (err) {
-    console.error('Upload-parts error:', err)
-    res.status(500).json({ error: 'Something went wrong while processing this document.' })
-  }
-})
-
-async function processDocumentTwoImages(docId, part1Buffer, part1MimeType, part2Buffer, part2MimeType) {
-  try {
-    const [part1Result, part2Result] = await Promise.all([
-      extractSingleImagePart(part1Buffer, part1MimeType, 'part1'),
-      extractSingleImagePart(part2Buffer, part2MimeType, 'part2'),
-    ])
-
-    const ocrParts = {
-      part1Text: part1Result?.part1Text || null,
-      part2Text: part2Result?.part2Text || null,
-    }
-
-    if (!ocrParts.part1Text?.trim() && !ocrParts.part2Text?.trim()) {
-      await updateActiveDocument(docId, {
-        uploadStatus: 'failed',
-        processingError: 'We could not read either image. Please check the crops and try again.',
-      })
-      return
-    }
-
-    let groqResult
-    try {
-      groqResult = await analyzeDocument(ocrParts)
-    } catch (err) {
-      console.error('AI extraction error:', err.message)
-      await updateActiveDocument(docId, {
-        uploadStatus: 'failed',
-        part1OcrTextHidden: ocrParts.part1Text || null,
-        part2OcrTextHidden: ocrParts.part2Text || null,
-        processingError: 'AI analysis is unavailable. Please check the Groq API key or try again later.',
-      })
-      return
-    }
-
-    // Part 2 ONLY, additive - try the OpenCV grid-based line-item extraction
-    // (detects the table's real border lines, deskews, OCRs each cell alone -
-    // avoids the column/row-bleed that whole-image OCR is prone to). Only
-    // ever ADOPTED when it finds strictly MORE items than the existing
-    // AI-parsed result - same "never regress" rule used elsewhere in this
-    // file (PO No, HSN fallback). On any failure (no Python, bad grid, etc)
-    // this returns null and groqResult is used completely unchanged.
-    try {
-      let gridItems = await extractLineItemsViaGrid(part2Buffer)
-      const existingCount = Array.isArray(groqResult.lineItems) ? groqResult.lineItems.length : 0
-      if (gridItems) {
-        gridItems = normalizePart2LineItems(gridItems, groqResult.warnings || (groqResult.warnings = []), groqResult.totals)
-      }
-      if (gridItems && gridItems.length > existingCount) {
-        const part1Like = {
-          consignee: groqResult.consignee, consignor: groqResult.consignor,
-          invoiceNo: groqResult.invoiceNo, fiDoc: groqResult.fiDoc, challanDate: groqResult.challanDate,
-          reason: groqResult.reason, poNo: groqResult.poNo, requestNo: groqResult.requestNo, irnNo: groqResult.irnNo,
-        }
-        const part2Like = { lineItems: gridItems, totals: groqResult.totals }
-        const views = assembleDocumentViews(part1Like, part2Like)
-        groqResult = {
-          ...groqResult,
-          lineItems: gridItems,
-          ...views,
-          warnings: [...(groqResult.warnings || []), `Line items replaced with grid-based extraction (${gridItems.length} rows found vs ${existingCount} from the standard method).`],
-        }
-      }
-    } catch (err) {
-      console.error('Grid line-item extraction error (ignored, using standard result):', err.message)
-    }
-
-    await updateActiveDocument(docId, {
-      uploadStatus: 'processed',
-      part1OcrTextHidden: ocrParts.part1Text || null,
-      part2OcrTextHidden: ocrParts.part2Text || null,
-      documentType: groqResult.documentType || 'Unknown',
-      fullSummary: groqResult.fullSummary || null,
-      summaryPoints: groqResult.summaryPoints || [],
-      extractedFields: groqResult.fields || [],
-      extractedTables: groqResult.tables || [],
-      invoiceNo: groqResult.invoiceNo || null,
-      fiDoc: groqResult.fiDoc || null,
-      challanDate: groqResult.challanDate || null,
-      reason: groqResult.reason || null,
-      poNo: groqResult.poNo || null,
-      requestNo: groqResult.requestNo || null,
-      irnNo: groqResult.irnNo || null,
-      consignee: groqResult.consignee || null,
-      consignor: groqResult.consignor || null,
-      lineItems: groqResult.lineItems || [],
-      totals: groqResult.totals || null,
-      part1: groqResult.part1 ? { ocrText: ocrParts.part1Text || null, ...groqResult.part1 } : null,
-      part2: groqResult.part2 ? { ocrText: ocrParts.part2Text || null, ...groqResult.part2 } : null,
-      warnings: groqResult.warnings || [],
-      extractionWarnings: groqResult.warnings || [],
-      processingError: null,
-      processedAt: new Date(),
-    })
-  } catch (err) {
-    console.error('processDocumentTwoImages error:', err.message)
-    await updateActiveDocument(docId, {
-      uploadStatus: 'failed',
-      processingError: 'Something went wrong while processing this document.',
-    })
-  }
-}
-
-async function processDocument(docId, buffer, mimeType) {
-  try {
-    const ocrParts = await extractParts(buffer, mimeType)
-    if (!ocrParts || (!ocrParts.part1Text?.trim() && !ocrParts.part2Text?.trim())) {
+    const headerText = await extractHeaderText(buffer, mimeType)
+    if (!headerText || !headerText.trim()) {
       await updateActiveDocument(docId, {
         uploadStatus: 'failed',
         processingError: 'We could not read this document.',
@@ -331,51 +162,26 @@ async function processDocument(docId, buffer, mimeType) {
       return
     }
 
-    let groqResult
+    let result
     try {
-      groqResult = await analyzeDocument(ocrParts)
+      result = await extractHeader(documentType, headerText)
     } catch (err) {
       console.error('AI extraction error:', err.message)
       await updateActiveDocument(docId, {
         uploadStatus: 'failed',
-        part1OcrTextHidden: ocrParts.part1Text || null,
-        part2OcrTextHidden: ocrParts.part2Text || null,
+        ocrTextHidden: headerText,
         processingError: 'AI analysis is unavailable. Please check the Groq API key or try again later.',
       })
       return
     }
 
-    // OCR-level warnings (e.g. "this scanned PDF has N pages, only page 1 was
-    // read") originate before the AI extraction step, so they aren't already
-    // part of groqResult.warnings - merge them in so they actually reach the user
-    // instead of only ever being logged to the server console.
-    const allWarnings = [...(ocrParts.ocrWarnings || []), ...(groqResult.warnings || [])]
-
     await updateActiveDocument(docId, {
       uploadStatus: 'processed',
-      part1OcrTextHidden: ocrParts.part1Text || null,
-      part2OcrTextHidden: ocrParts.part2Text || null,
-      documentType: groqResult.documentType || 'Unknown',
-      fullSummary: groqResult.fullSummary || null,
-      summaryPoints: groqResult.summaryPoints || [],
-      extractedFields: groqResult.fields || [],
-      extractedTables: groqResult.tables || [],
-      // Consignor-Consignee fields
-      invoiceNo: groqResult.invoiceNo || null,
-      fiDoc: groqResult.fiDoc || null,
-      challanDate: groqResult.challanDate || null,
-      reason: groqResult.reason || null,
-      poNo: groqResult.poNo || null,
-      requestNo: groqResult.requestNo || null,
-      irnNo: groqResult.irnNo || null,
-      consignee: groqResult.consignee || null,
-      consignor: groqResult.consignor || null,
-      lineItems: groqResult.lineItems || [],
-      totals: groqResult.totals || null,
-      part1: groqResult.part1 ? { ocrText: ocrParts.part1Text || null, ...groqResult.part1 } : null,
-      part2: groqResult.part2 ? { ocrText: ocrParts.part2Text || null, ...groqResult.part2 } : null,
-      warnings: allWarnings,
-      extractionWarnings: allWarnings,
+      ocrTextHidden: headerText,
+      taxInvoiceNo: result.taxInvoiceNo || null,
+      referenceNo: result.referenceNo || null,
+      number: result.number || null,
+      date: result.date || null,
       processingError: null,
       processedAt: new Date(),
     })
@@ -390,7 +196,7 @@ async function processDocument(docId, buffer, mimeType) {
 
 async function recoverInterruptedUploads() {
   const docs = await Document.find({ uploadStatus: 'uploaded', isDeleted: { $ne: true } })
-    .select('_id mimeType gridFsFileId part1FileId part2FileId')
+    .select('_id mimeType gridFsFileId documentType')
 
   docs.forEach((doc) => {
     enqueue(async () => {
@@ -399,20 +205,12 @@ async function recoverInterruptedUploads() {
           _id: doc._id,
           uploadStatus: 'uploaded',
           isDeleted: { $ne: true },
-        }).select('_id mimeType gridFsFileId part1FileId part2FileId')
+        }).select('_id mimeType gridFsFileId documentType')
 
         if (!activeDoc) return
 
-        if (activeDoc.part1FileId) {
-          const [part1Buffer, part2Buffer] = await Promise.all([
-            downloadBuffer(activeDoc.part1FileId),
-            downloadBuffer(activeDoc.part2FileId),
-          ])
-          await processDocumentTwoImages(activeDoc._id, part1Buffer, activeDoc.mimeType, part2Buffer, activeDoc.mimeType)
-        } else {
-          const buffer = await downloadBuffer(activeDoc.gridFsFileId)
-          await processDocument(activeDoc._id, buffer, activeDoc.mimeType)
-        }
+        const buffer = await downloadBuffer(activeDoc.gridFsFileId)
+        await processDocument(activeDoc._id, buffer, activeDoc.mimeType, activeDoc.documentType)
       } catch (err) {
         console.error(`Recovery failed for document ${doc._id}:`, err.message)
         await updateActiveDocument(doc._id, {
@@ -426,74 +224,12 @@ async function recoverInterruptedUploads() {
   return docs.length
 }
 
-// GET /api/documents/training-stats
-router.get('/training-stats', async (req, res) => {
-  try {
-    const trainedCount = await Document.countDocuments({
-      isDeleted: { $ne: true },
-      uploadStatus: 'processed',
-      $or: [
-        { extractedFields: { $exists: true, $not: { $size: 0 } } },
-        { invoiceNo: { $exists: true, $ne: null } },
-      ],
-    })
-    const correctedCount = await Document.countDocuments({
-      isDeleted: { $ne: true },
-      trainingWeight: { $gt: 1 },
-    })
-    res.json({ trainedCount, correctedCount })
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch training stats.' })
-  }
-})
-
-// GET /api/documents/feedback-stats
-router.get('/feedback-stats', async (req, res) => {
-  try {
-    const ChatFeedback = require('../models/ChatFeedback')
-    const feedbacks = await ChatFeedback.find({}).lean()
-    const total = feedbacks.length
-    if (!total) return res.json({ avgRating: 0, totalFeedback: 0, top3: [] })
-
-    const avg = feedbacks.reduce((s, f) => s + f.rating, 0) / total
-    const avgRating = Math.round(avg * 10) / 10
-
-    // Group ratings by document
-    const byDoc = {}
-    feedbacks.forEach(f => {
-      const id = f.documentId.toString()
-      if (!byDoc[id]) byDoc[id] = []
-      byDoc[id].push(f.rating)
-    })
-    const sorted = Object.entries(byDoc)
-      .map(([id, ratings]) => ({ id, avg: ratings.reduce((s, r) => s + r, 0) / ratings.length, count: ratings.length }))
-      .sort((a, b) => b.avg - a.avg)
-      .slice(0, 3)
-
-    const docs = await Document.find({ _id: { $in: sorted.map(s => s.id) } })
-      .select('autoName documentType invoiceNo challanDate consignee consignor').lean()
-    const docMap = {}
-    docs.forEach(d => { docMap[d._id.toString()] = d })
-
-    const top3 = sorted.map(s => ({
-      ...(docMap[s.id] || {}),
-      avgRating: Math.round(s.avg * 10) / 10,
-      feedbackCount: s.count,
-    }))
-
-    res.json({ avgRating, totalFeedback: total, top3 })
-  } catch (err) {
-    console.error('feedback-stats error:', err.message)
-    res.status(500).json({ error: 'Failed to fetch feedback stats.' })
-  }
-})
-
 // GET /api/documents
 router.get('/', async (req, res) => {
   try {
     const documents = await Document.find({ isDeleted: { $ne: true } })
       .sort({ createdAt: -1 })
-      .select('-part1OcrTextHidden -part2OcrTextHidden')
+      .select('-ocrTextHidden')
     res.json({ documents })
   } catch (err) {
     console.error(err)
@@ -505,7 +241,7 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
-      .select('-part1OcrTextHidden -part2OcrTextHidden')
+      .select('-ocrTextHidden')
     if (!doc) return res.status(404).json({ error: 'Document not found.' })
     res.json({ document: doc })
   } catch (err) {
@@ -513,39 +249,15 @@ router.get('/:id', async (req, res) => {
   }
 })
 
-// GET /api/documents/:id/download - single-image/PDF flow only
+// GET /api/documents/:id/download
 router.get('/:id/download', async (req, res) => {
   try {
     const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
     if (!doc) return res.status(404).json({ error: 'Document not found.' })
-    if (!doc.gridFsFileId) return res.status(400).json({ error: 'This document was uploaded as two parts - use /download/part1 or /download/part2.' })
 
     const buffer = await downloadBuffer(doc.gridFsFileId)
     res.set('Content-Type', doc.mimeType)
     res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.originalFilename)}"`)
-    res.send(buffer)
-  } catch (err) {
-    console.error('Download error:', err)
-    res.status(500).json({ error: 'Failed to download file.' })
-  }
-})
-
-// GET /api/documents/:id/download/:part - two-image flow, part = 'part1' | 'part2'
-router.get('/:id/download/:part', async (req, res) => {
-  try {
-    const { part } = req.params
-    if (part !== 'part1' && part !== 'part2') return res.status(400).json({ error: 'Invalid part.' })
-
-    const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
-    if (!doc) return res.status(404).json({ error: 'Document not found.' })
-
-    const fileId = part === 'part1' ? doc.part1FileId : doc.part2FileId
-    const originalFilename = part === 'part1' ? doc.part1OriginalFilename : doc.part2OriginalFilename
-    if (!fileId) return res.status(400).json({ error: 'This document does not have separate Part 1/Part 2 files.' })
-
-    const buffer = await downloadBuffer(fileId)
-    res.set('Content-Type', doc.mimeType)
-    res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(originalFilename || `${part}.jpg`)}"`)
     res.send(buffer)
   } catch (err) {
     console.error('Download error:', err)
@@ -559,46 +271,20 @@ router.post('/:id/reprocess', async (req, res) => {
     const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
     if (!doc) return res.status(404).json({ error: 'Document not found.' })
 
-    const isTwoImageDoc = !!doc.part1FileId
-
-    let buffer, part1Buffer, part2Buffer
-    if (isTwoImageDoc) {
-      [part1Buffer, part2Buffer] = await Promise.all([
-        downloadBuffer(doc.part1FileId),
-        downloadBuffer(doc.part2FileId),
-      ])
-    } else {
-      buffer = await downloadBuffer(doc.gridFsFileId)
-    }
+    const buffer = await downloadBuffer(doc.gridFsFileId)
 
     await Document.findByIdAndUpdate(doc._id, {
       uploadStatus: 'uploaded',
       processingError: null,
-      extractedFields: [],
-      extractedTables: [],
-      warnings: [],
-      invoiceNo: null,
-      fiDoc: null,
-      challanDate: null,
-      reason: null,
-      poNo: null,
-      requestNo: null,
-      irnNo: null,
-      consignee: null,
-      consignor: null,
-      lineItems: [],
-      totals: null,
-      part1: null,
-      part2: null,
-      extractionWarnings: [],
-      editedFieldKeys: [],
+      taxInvoiceNo: null,
+      referenceNo: null,
+      number: null,
+      date: null,
+      edited: false,
     })
 
     // Queue reprocessing - only 1 OCR job runs at a time to prevent OOM
-    const reprocessPromise = isTwoImageDoc
-      ? enqueue(() => processDocumentTwoImages(doc._id, part1Buffer, doc.mimeType, part2Buffer, doc.mimeType))
-      : enqueue(() => processDocument(doc._id, buffer, doc.mimeType))
-    reprocessPromise
+    enqueue(() => processDocument(doc._id, buffer, doc.mimeType, doc.documentType))
       .then(() => updateActiveDocument(doc._id, { reprocessedAt: new Date() }))
       .catch(err => console.error('Reprocess background error:', err.message))
 
@@ -626,111 +312,50 @@ router.delete('/:id', async (req, res) => {
         console.warn(`Failed to delete GridFS file for document ${doc._id}: ${err.message}`)
       }
     }
-    for (const fileId of [doc.part1FileId, doc.part2FileId]) {
-      if (!fileId) continue
-      try {
-        await deleteFile(fileId)
-      } catch (err) {
-        console.warn(`Failed to delete GridFS file for document ${doc._id}: ${err.message}`)
-      }
-    }
     res.json({ message: 'Document deleted successfully.' })
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete document.' })
   }
 })
 
-// PATCH /api/documents/:id/fields/:fieldKey/correct
-router.patch('/:id/fields/:fieldKey/correct', async (req, res) => {
+// PATCH /api/documents/:id/correct - editable fields are documentType-conditional:
+// Tax Invoice -> taxInvoiceNo | referenceNo | date. Delivery Challan -> number | date.
+const EDITABLE_FIELDS = ['taxInvoiceNo', 'referenceNo', 'number', 'date']
+router.patch('/:id/correct', async (req, res) => {
   try {
-    const { fieldLabel, fieldKey, oldValue, newValue } = req.body
-    if (!newValue || !newValue.trim()) {
+    const { field, value } = req.body
+    if (!EDITABLE_FIELDS.includes(field)) {
+      return res.status(400).json({ error: 'field must be one of: ' + EDITABLE_FIELDS.join(', ') })
+    }
+    if (!value || !value.trim()) {
       return res.status(400).json({ error: 'New value is required.' })
     }
 
     const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
     if (!doc) return res.status(404).json({ error: 'Document not found.' })
 
-    const fieldIndex = doc.extractedFields.findIndex(f => f.normalizedKey === req.params.fieldKey)
-    if (fieldIndex === -1) return res.status(404).json({ error: 'Field not found.' })
-
-    const trimmedValue = newValue.trim()
-    const priorLabel = doc.extractedFields[fieldIndex].label
-    const priorValue = doc.extractedFields[fieldIndex].value
-
-    // Single source of truth: write the edit into the CANONICAL structured data
-    // (consignee/consignor/totals/lineItems/header scalars), then regenerate
-    // every derived view (fields, tables, summaries, part1/part2) from that one
-    // corrected source. There is no separate "AI value" left anywhere afterward -
-    // the old value is gone, not just hidden behind a display override.
-    const canonical = {
-      consignee: doc.consignee ? doc.consignee.toObject() : null,
-      consignor: doc.consignor ? doc.consignor.toObject() : null,
-      invoiceNo: doc.invoiceNo,
-      fiDoc: doc.fiDoc,
-      challanDate: doc.challanDate,
-      reason: doc.reason,
-      poNo: doc.poNo,
-      requestNo: doc.requestNo,
-      irnNo: doc.irnNo,
-      lineItems: (doc.lineItems || []).map(item => item.toObject()),
-      totals: doc.totals ? doc.totals.toObject() : null,
+    if (field === 'date') {
+      const { normalizeDateToDDMMYYYY } = require('../services/groq')
+      const normalized = normalizeDateToDDMMYYYY(value.trim())
+      if (!normalized) return res.status(400).json({ error: 'Date must be in DD/MM/YYYY format.' })
     }
 
-    const applied = applyCorrection(canonical, req.params.fieldKey, trimmedValue)
-    if (!applied) {
-      return res.status(400).json({ error: 'This field cannot be edited.' })
-    }
-
-    if (!doc.editedFieldKeys.includes(req.params.fieldKey)) {
-      doc.editedFieldKeys.push(req.params.fieldKey)
-    }
-
-    const views = assembleDocumentViews(canonical, canonical)
-    const markEdited = (fields) => {
-      (fields || []).forEach(f => {
-        if (doc.editedFieldKeys.includes(f.normalizedKey)) f.edited = true
-      })
-    }
-    markEdited(views.fields)
-    markEdited(views.part1.fields)
-    markEdited(views.part2.fields)
-
-    doc.consignee = canonical.consignee
-    doc.consignor = canonical.consignor
-    doc.invoiceNo = canonical.invoiceNo
-    doc.fiDoc = canonical.fiDoc
-    doc.challanDate = canonical.challanDate
-    doc.reason = canonical.reason
-    doc.poNo = canonical.poNo
-    doc.requestNo = canonical.requestNo
-    doc.irnNo = canonical.irnNo
-    doc.lineItems = canonical.lineItems
-    doc.totals = canonical.totals
-
-    doc.extractedFields = views.fields
-    doc.extractedTables = views.tables
-    doc.fullSummary = views.fullSummary
-    doc.summaryPoints = views.summaryPoints
-    doc.part1 = { ocrText: doc.part1?.ocrText || null, fields: views.part1.fields, summary: views.part1.summary }
-    doc.part2 = { ocrText: doc.part2?.ocrText || null, fields: views.part2.fields, tables: views.part2.tables, summary: views.part2.summary }
-
+    const oldValue = doc[field]
+    doc[field] = value.trim()
+    doc.edited = true
     await doc.save()
 
     await Correction.create({
       documentId: doc._id,
-      fieldLabel: fieldLabel || priorLabel,
-      fieldKey: req.params.fieldKey,
-      oldValue: oldValue ?? priorValue,
-      newValue: trimmedValue,
+      fieldLabel: field,
+      fieldKey: field,
+      oldValue,
+      newValue: value.trim(),
       correctedAt: new Date(),
     })
 
-    // Boost training weight - corrected docs are higher-quality examples
-    await Document.findByIdAndUpdate(doc._id, { $inc: { trainingWeight: 1 } })
-
     const updated = doc.toObject()
-    delete updated.part1OcrTextHidden; delete updated.part2OcrTextHidden
+    delete updated.ocrTextHidden
     res.json({ message: 'Field corrected successfully.', document: updated })
   } catch (err) {
     console.error('Correction error:', err)
@@ -738,80 +363,67 @@ router.patch('/:id/fields/:fieldKey/correct', async (req, res) => {
   }
 })
 
-// POST /api/documents/:id/line-items - user manually adds a row the OCR/AI
-// missed entirely (not a correction to an existing row - a brand new one).
-// Same single-source-of-truth pattern as the correct route: append to the
-// canonical lineItems array, then regenerate every derived view from it.
-router.post('/:id/line-items', async (req, res) => {
+// POST /api/documents/new-excel-file - starts (or resets) the active export
+// workbook. Body: { filename }.
+router.post('/new-excel-file', async (req, res) => {
   try {
-    const { srNo, description, hsnSac, basic, quantity, amount } = req.body
-    if (!description || !description.trim()) {
-      return res.status(400).json({ error: 'Description is required.' })
+    const { filename } = req.body
+    if (!filename || !filename.trim()) {
+      return res.status(400).json({ error: 'filename is required.' })
     }
+    const trimmed = filename.trim()
+    await excel.createNewFile(trimmed)
+    await Settings.findOneAndUpdate(
+      { key: 'activeExcelFile' },
+      { $set: { filename: trimmed } },
+      { upsert: true }
+    )
+    res.json({ message: 'New Excel file started.', filename: trimmed })
+  } catch (err) {
+    console.error('new-excel-file error:', err)
+    res.status(500).json({ error: 'Failed to start a new Excel file.' })
+  }
+})
 
+// POST /api/documents/:id/export - appends this document's row to the active
+// workbook and logs an ExportedRow, then streams the file back for download.
+router.post('/:id/export', async (req, res) => {
+  try {
     const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
     if (!doc) return res.status(404).json({ error: 'Document not found.' })
-
-    const canonical = {
-      consignee: doc.consignee ? doc.consignee.toObject() : null,
-      consignor: doc.consignor ? doc.consignor.toObject() : null,
-      invoiceNo: doc.invoiceNo,
-      fiDoc: doc.fiDoc,
-      challanDate: doc.challanDate,
-      reason: doc.reason,
-      poNo: doc.poNo,
-      requestNo: doc.requestNo,
-      irnNo: doc.irnNo,
-      lineItems: [
-        ...(doc.lineItems || []).map(item => item.toObject()),
-        {
-          srNo: srNo?.trim() || null,
-          description: description.trim(),
-          hsnSac: hsnSac?.trim() || null,
-          basic: basic?.trim() || null,
-          quantity: quantity?.trim() || null,
-          amount: amount?.trim() || null,
-        },
-      ],
-      totals: doc.totals ? doc.totals.toObject() : null,
+    if (doc.uploadStatus !== 'processed') {
+      return res.status(400).json({ error: 'Document has not been processed yet.' })
     }
 
-    const views = assembleDocumentViews(canonical, canonical)
-    const markEdited = (fields) => {
-      (fields || []).forEach(f => {
-        if (doc.editedFieldKeys.includes(f.normalizedKey)) f.edited = true
-      })
+    const settings = await Settings.findOne({ key: 'activeExcelFile' })
+    if (!settings || !settings.filename) {
+      return res.status(400).json({ error: 'NO_ACTIVE_FILE', message: 'No active Excel file. Start one first.' })
     }
-    markEdited(views.fields)
-    markEdited(views.part1.fields)
-    markEdited(views.part2.fields)
 
-    doc.lineItems = canonical.lineItems
-    doc.extractedFields = views.fields
-    doc.extractedTables = views.tables
-    doc.fullSummary = views.fullSummary
-    doc.summaryPoints = views.summaryPoints
-    doc.part1 = { ocrText: doc.part1?.ocrText || null, fields: views.part1.fields, summary: views.part1.summary }
-    doc.part2 = { ocrText: doc.part2?.ocrText || null, fields: views.part2.fields, tables: views.part2.tables, summary: views.part2.summary }
+    const row = {
+      documentType: doc.documentType,
+      taxInvoiceNo: doc.taxInvoiceNo,
+      referenceNo: doc.referenceNo,
+      number: doc.number,
+      date: doc.date,
+      timestamp: new Date().toISOString(),
+    }
 
-    await doc.save()
+    const target = await excel.appendRow(settings.filename, row)
 
-    await Correction.create({
+    await ExportedRow.create({
       documentId: doc._id,
-      fieldLabel: `Item ${canonical.lineItems.length} (manually added)`,
-      fieldKey: `item_${canonical.lineItems.length}_description`,
-      oldValue: null,
-      newValue: description.trim(),
-      correctedAt: new Date(),
+      documentType: row.documentType,
+      taxInvoiceNo: row.taxInvoiceNo,
+      referenceNo: row.referenceNo,
+      number: row.number,
+      date: row.date,
     })
-    await Document.findByIdAndUpdate(doc._id, { $inc: { trainingWeight: 1 } })
 
-    const updated = doc.toObject()
-    delete updated.part1OcrTextHidden; delete updated.part2OcrTextHidden
-    res.json({ message: 'Row added successfully.', document: updated })
+    res.download(target)
   } catch (err) {
-    console.error('Add line-item error:', err)
-    res.status(500).json({ error: 'Failed to add row.' })
+    console.error('Export error:', err)
+    res.status(500).json({ error: 'Failed to export document.' })
   }
 })
 

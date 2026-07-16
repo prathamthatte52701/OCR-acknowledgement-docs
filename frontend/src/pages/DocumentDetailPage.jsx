@@ -1,9 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import api from '../utils/api'
-import { DetailView } from '../components/DocumentDetailsPanel'
 import CorrectionModal from '../components/CorrectionModal'
-import AddRowModal from '../components/AddRowModal'
 import LoadingState from '../components/LoadingState'
 import ErrorMessage from '../components/ErrorMessage'
 import ProcessingState from '../components/ProcessingState'
@@ -22,18 +20,33 @@ function formatSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
 }
 
+// Which fields are editable, per documentType - matches backend EDITABLE_FIELDS
+// and PATCH /:id/correct's field-conditional validation.
+function fieldsFor(doc) {
+  if (doc.documentType === 'Tax Invoice') {
+    return [
+      { key: 'taxInvoiceNo', label: 'TAX INVOICE No.', value: doc.taxInvoiceNo },
+      { key: 'referenceNo', label: 'Reference No.', value: doc.referenceNo },
+      { key: 'date', label: 'Date', value: doc.date },
+    ]
+  }
+  return [
+    { key: 'number', label: 'Delivery Challan No.', value: doc.number },
+    { key: 'date', label: 'Date', value: doc.date },
+  ]
+}
+
 export default function DocumentDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [doc, setDoc] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [activeTab, setActiveTab] = useState('part1')
-  const [correctionField, setCorrectionField] = useState(null)
-  const [addingRow, setAddingRow] = useState(false)
+  const [editingField, setEditingField] = useState(null)
   const [reprocessing, setReprocessing] = useState(false)
   const [reprocessMsg, setReprocessMsg] = useState('')
   const [deleting, setDeleting] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   async function fetchDoc() {
     try {
@@ -65,26 +78,11 @@ export default function DocumentDetailPage() {
 
   async function handleCorrect(field, newValue) {
     try {
-      await api.patch(`/documents/${id}/fields/${field.normalizedKey}/correct`, {
-        fieldLabel: field.label,
-        fieldKey: field.normalizedKey,
-        oldValue: field.value,
-        newValue,
-      })
-      setCorrectionField(null)
+      await api.patch(`/documents/${id}/correct`, { field: field.key, value: newValue })
+      setEditingField(null)
       fetchDoc()
-    } catch {
-      alert('Failed to save correction.')
-    }
-  }
-
-  async function handleAddRow(values) {
-    try {
-      await api.post(`/documents/${id}/line-items`, values)
-      setAddingRow(false)
-      fetchDoc()
-    } catch {
-      alert('Failed to add row.')
+    } catch (err) {
+      alert(err.userMessage || 'Failed to save correction.')
     }
   }
 
@@ -103,6 +101,27 @@ export default function DocumentDetailPage() {
     }
   }
 
+  async function handleExport() {
+    setExporting(true)
+    try {
+      const res = await api.post(`/documents/${id}/export`, {}, { responseType: 'blob' })
+      const url = window.URL.createObjectURL(new Blob([res.data]))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'export.xlsx'
+      a.click()
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      if (err.response?.data?.error === 'NO_ACTIVE_FILE') {
+        alert('No active Excel file. Start one from the Documents page first.')
+      } else {
+        alert(err.userMessage || 'Export failed.')
+      }
+    } finally {
+      setExporting(false)
+    }
+  }
+
   async function handleDelete() {
     if (!window.confirm('Delete this document? This cannot be undone.')) return
     setDeleting(true)
@@ -116,11 +135,6 @@ export default function DocumentDetailPage() {
   }
 
   function handleDownload() {
-    if (doc?.part1FileId) {
-      window.open(`/api/documents/${id}/download/part1`, '_blank')
-      window.open(`/api/documents/${id}/download/part2`, '_blank')
-      return
-    }
     window.open(`/api/documents/${id}/download`, '_blank')
   }
 
@@ -134,19 +148,12 @@ export default function DocumentDetailPage() {
     failed: 'text-red-400 bg-red-900/20 border-red-800',
   }[doc.uploadStatus] || 'text-gray-400 bg-gray-800 border-gray-700'
 
-  const tabs = [
-    { id: 'part1', label: 'Part 1' },
-    { id: 'part2', label: 'Part 2' },
-  ]
-
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
-      {/* Back */}
       <Link to="/documents" className="text-gray-500 hover:text-gray-300 text-[14.7px] no-underline flex items-center gap-1 mb-4">
         {'<-'} Back to Documents
       </Link>
 
-      {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
         <div>
           <h1 className="text-2xl font-bold text-white">{doc.autoName}</h1>
@@ -157,7 +164,6 @@ export default function DocumentDetailPage() {
         </span>
       </div>
 
-      {/* Meta */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-5 grid grid-cols-2 sm:grid-cols-4 gap-3 text-[14.7px]">
         {[
           { label: 'Document Type', value: doc.documentType || '-' },
@@ -172,7 +178,6 @@ export default function DocumentDetailPage() {
         ))}
       </div>
 
-      {/* Processing error */}
       {doc.uploadStatus === 'failed' && (
         <div className="bg-red-900/20 border border-red-800 rounded-xl p-4 mb-5">
           <p className="text-red-400 font-semibold mb-1">Processing Failed</p>
@@ -180,34 +185,25 @@ export default function DocumentDetailPage() {
         </div>
       )}
 
-      {/* Reprocess feedback */}
       {reprocessMsg && (
         <div className={`border rounded-xl p-3 mb-4 text-[14.7px] ${reprocessMsg.toLowerCase().includes('started') ? 'bg-green-900/20 border-green-800 text-green-400' : 'bg-red-900/20 border-red-800 text-red-400'}`}>
           {reprocessMsg}
         </div>
       )}
 
-      {/* Warnings */}
-      {doc.warnings?.length > 0 && (
-        <div className="bg-yellow-900/10 border border-yellow-800/50 rounded-xl p-4 mb-5">
-          <p className="text-yellow-400 font-medium text-[14.7px] mb-2">Warn Extraction Warnings</p>
-          <ul className="space-y-1">
-            {doc.warnings.map((w, i) => (
-              <li key={i} className="text-yellow-300/60 text-[12.6px]">- {w}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Actions */}
       <div className="flex flex-wrap gap-2 mb-6">
         {doc.uploadStatus === 'processed' && (
           <Link
-            to={`/documents/${id}/chat/part1`}
+            to={`/documents/${id}/chat`}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-[14.7px] font-medium rounded-lg transition-colors no-underline"
           >
             Chat with Document
           </Link>
+        )}
+        {doc.uploadStatus === 'processed' && (
+          <button onClick={handleExport} disabled={exporting} className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-[14.7px] font-medium rounded-lg transition-colors">
+            {exporting ? 'Exporting...' : 'Export'}
+          </button>
         )}
         <button onClick={handleDownload} className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-[14.7px] rounded-lg transition-colors">
           Download Original
@@ -220,68 +216,38 @@ export default function DocumentDetailPage() {
         </button>
       </div>
 
-      {/* Reprocessing spinner */}
       {reprocessing && <ProcessingState message="Reprocessing with OCR and AI..." />}
 
-      {/* Tabs */}
       {doc.uploadStatus === 'processed' && !reprocessing && (
-        <>
-          <div className="flex gap-0 mb-5 border-b border-gray-800">
-            {tabs.map(tab => (
+        <div className="space-y-3">
+          <h3 className="text-gray-300 font-semibold mb-2">Extracted Fields</h3>
+          {fieldsFor(doc).map(f => (
+            <div key={f.key} className="flex items-center justify-between gap-3 bg-gray-900 border border-gray-800 rounded-xl px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-gray-500 text-[12.6px]">{f.label}</p>
+                <p className="text-gray-100 text-[14.7px] font-semibold truncate">{f.value || 'Not available'}</p>
+              </div>
               <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-2.5 text-[14.7px] font-medium border-b-2 -mb-px transition-colors ${
-                  activeTab === tab.id
-                    ? 'border-blue-500 text-blue-400'
-                    : 'border-transparent text-gray-500 hover:text-gray-300'
-                }`}
+                onClick={() => setEditingField(f)}
+                className="shrink-0 px-3 py-1.5 text-[12.6px] font-bold text-blue-300 border border-blue-800/50 rounded-lg hover:bg-blue-900/20 transition-colors"
               >
-                {tab.label}
+                Edit
               </button>
-            ))}
-          </div>
-
-          {activeTab === 'part1' && (
-            <div className="space-y-5">
-              <div className="bg-blue-900/10 border border-blue-800/40 rounded-xl p-3 text-[12.6px] text-blue-300/80">
-                Part 1 - the upper section of the page: Consignee and Consignor header details.
-              </div>
-              <div>
-                <h3 className="text-gray-300 font-semibold mb-2">Consignee</h3>
-                <DetailView type="consignee" doc={doc} onCorrect={(field) => setCorrectionField(field)} />
-              </div>
-              <div>
-                <h3 className="text-gray-300 font-semibold mb-2">Consignor</h3>
-                <DetailView type="consigner" doc={doc} onCorrect={(field) => setCorrectionField(field)} />
-              </div>
             </div>
+          ))}
+          {doc.edited && (
+            <p className="text-[12.6px] text-amber-400">This document has manually edited fields.</p>
           )}
-          {activeTab === 'part2' && (
-            <div className="space-y-4">
-              <div className="bg-blue-900/10 border border-blue-800/40 rounded-xl p-3 text-[12.6px] text-blue-300/80">
-                Part 2 - the lower section of the page: Uncoded RGP line-items and GST tax totals table.
-              </div>
-              <h3 className="text-gray-300 font-semibold">Uncoded RGP</h3>
-              <DetailView type="items" doc={doc} onCorrect={(field) => setCorrectionField(field)} onAddRow={() => setAddingRow(true)} />
-            </div>
-          )}
-        </>
+        </div>
       )}
 
-      {correctionField && (
+      {editingField && (
         <CorrectionModal
-          field={correctionField}
+          field={{ label: editingField.label, value: editingField.value, key: editingField.key }}
           onSave={handleCorrect}
-          onClose={() => setCorrectionField(null)}
+          onClose={() => setEditingField(null)}
         />
       )}
-
-      <AddRowModal
-        open={addingRow}
-        onSave={handleAddRow}
-        onClose={() => setAddingRow(false)}
-      />
     </div>
   )
 }

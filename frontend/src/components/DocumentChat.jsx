@@ -1,9 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import ChatMessageBubble from './ChatMessageBubble'
-import DocumentDetailsPanel from './DocumentDetailsPanel'
 import LoadingState from './LoadingState'
 
-export default function DocumentChat({ messages, onSendMessage, loading, externalSending = false, doc, onRate, onCorrect, onAddRow, onDetailAction, part }) {
+export default function DocumentChat({ messages, onSendMessage, loading, externalSending = false, onRate }) {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const messagesRef = useRef(null)
@@ -37,12 +36,12 @@ export default function DocumentChat({ messages, onSendMessage, loading, externa
             <div className="grid h-14 w-14 place-items-center rounded-2xl border border-blue-300/18 bg-blue-500/10 text-[14.7px] font-black text-blue-200 shadow-[0_0_34px_rgba(37,99,235,0.2)]">
               AI
             </div>
-            <p className="font-bold text-slate-200">Ask anything about this delivery challan</p>
-            <p className="max-w-sm text-[14.7px] text-slate-500">Type your question about consignee, consignor, invoice number, line items, or tax totals below.</p>
+            <p className="font-bold text-slate-200">Ask anything about this document</p>
+            <p className="max-w-sm text-[14.7px] text-slate-500">Type your question about the document type, number, or date below.</p>
           </div>
         ) : (
           messages.map((msg, i) => (
-            <ChatMessageBubble key={msg._id || msg._localId || i} message={msg} onRate={onRate} doc={doc} onCorrect={onCorrect} onAddRow={onAddRow} />
+            <ChatMessageBubble key={msg._id || msg._localId || i} message={msg} onRate={onRate} />
           ))
         )}
 
@@ -62,8 +61,6 @@ export default function DocumentChat({ messages, onSendMessage, loading, externa
           </div>
         )}
       </div>
-
-      <DocumentDetailsPanel doc={doc} onSelect={onDetailAction} part={part} />
 
       <div className="border-t border-blue-300/12 bg-slate-950/82 px-4 py-3">
         <div className="flex items-end gap-2 rounded-2xl border border-blue-300/20 bg-slate-900/70 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_16px_42px_rgba(2,8,23,0.28)] transition-colors focus-within:border-blue-300/55">

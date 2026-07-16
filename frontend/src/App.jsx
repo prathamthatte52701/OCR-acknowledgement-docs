@@ -17,7 +17,6 @@ export default function App() {
           <Route path="/documents" element={<DocumentsPage />} />
           <Route path="/documents/:id" element={<DocumentDetailPage />} />
           <Route path="/documents/:id/chat" element={<DocumentChatPage />} />
-          <Route path="/documents/:id/chat/:part" element={<DocumentChatPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>
