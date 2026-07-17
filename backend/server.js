@@ -12,6 +12,18 @@ const dns = require('dns')
 // anything else.
 dns.setServers(['8.8.8.8', '1.1.1.1', ...dns.getServers()])
 
+// Without these, ANY uncaught error anywhere (a stray rejection in an OCR
+// child-process handler, a Mongoose callback, etc.) kills the whole Node
+// process with nothing to restart it - every in-flight request gets a 502
+// from the frontend's dev proxy, and the server stays down until someone
+// notices and manually restarts it. Log and keep running instead.
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION (server kept running):', err)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED REJECTION (server kept running):', reason)
+})
+
 const documentsRouter = require('./routes/documents')
 const chatRouter = require('./routes/chat')
 
