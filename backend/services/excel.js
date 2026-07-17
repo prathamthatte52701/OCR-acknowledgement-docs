@@ -4,6 +4,8 @@ const fs = require('fs')
 
 const EXPORT_DIR = path.join(__dirname, '..', 'exports')
 const HEADERS = ['Document Type', 'Number', 'Date', 'Timestamp']
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December']
 
 function ensureExportDir() {
   if (!fs.existsSync(EXPORT_DIR)) fs.mkdirSync(EXPORT_DIR, { recursive: true })
@@ -14,12 +16,24 @@ function filePath(filename) {
   return path.join(EXPORT_DIR, safe.endsWith('.xlsx') ? safe : `${safe}.xlsx`)
 }
 
-async function createNewFile(filename) {
-  ensureExportDir()
-  const workbook = new ExcelJS.Workbook()
-  const sheet = workbook.addWorksheet('Exports')
+// Current period from the real clock - drives which monthly worksheet a save
+// lands in and which yearly workbook is active. Kept in one place so month/year
+// rollover is detected consistently everywhere.
+function currentPeriod(now = new Date()) {
+  return { year: now.getFullYear(), month: MONTHS[now.getMonth()] }
+}
+
+function addHeaderRow(sheet) {
   sheet.addRow(HEADERS)
   sheet.getRow(1).font = { bold: true }
+}
+
+// Creates a fresh yearly workbook containing the current month's worksheet.
+// Overwrites any file of the same name (used when starting a brand-new batch).
+async function createWorkbook(filename, month = currentPeriod().month) {
+  ensureExportDir()
+  const workbook = new ExcelJS.Workbook()
+  addHeaderRow(workbook.addWorksheet(month))
   const target = filePath(filename)
   await workbook.xlsx.writeFile(target)
   return target
@@ -34,25 +48,27 @@ function formatNumberCell({ documentType, taxInvoiceNo, referenceNo, number }) {
   return number || null
 }
 
-// Exports are serialized through this promise chain - two parallel exports
-// would otherwise read-modify-write the same workbook and lose a row.
-let _exportChain = Promise.resolve()
+// All workbook writes are serialized through this promise chain - two parallel
+// saves would otherwise read-modify-write the same file and lose a row.
+let _writeChain = Promise.resolve()
 
-function appendRow(filename, row) {
-  const job = _exportChain.then(() => appendRowNow(filename, row))
-  // Keep the chain alive even when a job fails - the next export must not
-  // inherit this one's rejection.
-  _exportChain = job.catch(() => {})
+function appendRow(filename, month, row) {
+  const job = _writeChain.then(() => appendRowNow(filename, month, row))
+  // Keep the chain alive even when a job fails - the next save must not inherit
+  // this one's rejection.
+  _writeChain = job.catch(() => {})
   return job
 }
 
-async function appendRowNow(filename, row) {
+// Appends one row to the given month's worksheet, creating the workbook and/or
+// the worksheet if either is missing (this is what makes automatic monthly
+// switching work - the first save in a new month just creates that sheet).
+async function appendRowNow(filename, month, row) {
   ensureExportDir()
   const target = filePath(filename)
   if (!fs.existsSync(target)) {
-    // Settings can point at a file that was deleted from disk - recreate it
-    // with the header row instead of dead-ending the export.
-    await createNewFile(filename)
+    // Settings can point at a file that was deleted from disk - recreate it.
+    await createWorkbook(filename, month)
   }
   // Windows locks the workbook while it is open in Excel - both the read and
   // the write below fail with EBUSY/EPERM in that case, so the whole
@@ -60,12 +76,16 @@ async function appendRowNow(filename, row) {
   try {
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.readFile(target)
-    const sheet = workbook.getWorksheet('Exports') || workbook.worksheets[0]
+    let sheet = workbook.getWorksheet(month)
+    if (!sheet) {
+      sheet = workbook.addWorksheet(month)
+      addHeaderRow(sheet)
+    }
     sheet.addRow([row.documentType, formatNumberCell(row), row.date, row.timestamp])
     await workbook.xlsx.writeFile(target)
   } catch (err) {
     if (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES') {
-      const friendly = new Error(`"${path.basename(target)}" is open in Excel. Close it and try exporting again.`)
+      const friendly = new Error(`"${path.basename(target)}" is open in Excel. Close it and try saving again.`)
       friendly.code = 'FILE_LOCKED'
       throw friendly
     }
@@ -74,4 +94,4 @@ async function appendRowNow(filename, row) {
   return target
 }
 
-module.exports = { createNewFile, appendRow, filePath, EXPORT_DIR }
+module.exports = { createWorkbook, appendRow, filePath, currentPeriod, EXPORT_DIR, MONTHS }

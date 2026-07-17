@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { useState, useEffect } from 'react'
-import api from '../utils/api'
+import api, { downloadWorkbook } from '../utils/api'
 import challanRouteVisual from '../assets/transport-bill-route-visual.png'
 
 const features = [
@@ -265,6 +265,18 @@ export default function Dashboard() {
   const [recentDocs, setRecentDocs] = useState([])
   const [training, setTraining] = useState({ trainedCount: 0, correctedCount: 0 })
   const [feedback, setFeedback] = useState({ avgRating: 0, totalFeedback: 0, top3: [] })
+  const [exporting, setExporting] = useState(false)
+
+  async function handleExport() {
+    setExporting(true)
+    try {
+      await downloadWorkbook()
+    } catch (err) {
+      alert(err.userMessage || 'Failed to download the Excel workbook.')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   useEffect(() => {
     api.get('/documents').then(res => {
@@ -306,13 +318,25 @@ export default function Dashboard() {
             <p className="mt-5 max-w-2xl text-base leading-7 text-slate-400">
               Upload Tax Invoice or Delivery Challan acknowledgements and let AI extract the document number and date instantly - then export everything to Excel.
             </p>
-            <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+            <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
               <Link
                 to="/upload"
                 className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-blue-600 to-cyan-500 px-6 py-3.5 text-[14.7px] font-black text-white no-underline shadow-[0_18px_45px_rgba(37,99,235,0.34)] transition-all hover:-translate-y-0.5 hover:shadow-[0_22px_60px_rgba(37,99,235,0.45)] focus:outline-none focus:ring-2 focus:ring-blue-300/60"
               >
                 Upload Document
               </Link>
+              <button
+                onClick={handleExport}
+                disabled={exporting}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-6 py-3.5 text-[14.7px] font-black text-white shadow-[0_18px_45px_rgba(16,185,129,0.34)] transition-all hover:-translate-y-0.5 hover:shadow-[0_22px_60px_rgba(16,185,129,0.45)] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-emerald-300/60"
+              >
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                  <path d="M12 4v12" />
+                  <path d="M7 11l5 5 5-5" />
+                  <path d="M4 20h16" />
+                </svg>
+                {exporting ? 'Exporting...' : 'Export Excel'}
+              </button>
               <Link
                 to="/documents"
                 className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/[0.045] px-6 py-3.5 text-[14.7px] font-black text-slate-200 no-underline transition-all hover:-translate-y-0.5 hover:border-blue-300/30 hover:bg-blue-500/10 focus:outline-none focus:ring-2 focus:ring-blue-300/40"

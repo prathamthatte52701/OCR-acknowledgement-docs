@@ -14,19 +14,53 @@ api.interceptors.response.use(
   }
 )
 
-// Export a document row to the active Excel workbook and download the file.
-// Handles the first-ever export automatically: when the backend says no
-// active file exists (NO_ACTIVE_FILE), prompts for a filename, creates the
-// workbook, then retries. Blob responses hide JSON error bodies, so 400s
-// are re-parsed from blob text before deciding what went wrong.
-export async function exportDocument(docId) {
-  async function doExport() {
-    return api.post(`/documents/${docId}/export`, {}, { responseType: 'blob' })
+// Save a processed document's row to the active Excel workbook - appends only,
+// no download. Handles two automatic prompts:
+//  - NO_ACTIVE_WORKBOOK: first-ever save, prompt for a workbook name, create it,
+//    retry.
+//  - NEED_NEW_WORKBOOK: the year rolled over, prompt for the new year's workbook
+//    name, create it, retry.
+// Returns the success message on success; throws with err.userMessage carrying
+// the exact server reason (locked file, permission, etc.) on failure.
+export async function saveDocument(docId) {
+  async function doSave() {
+    return api.post(`/documents/${docId}/save`)
   }
 
+  try {
+    const res = await doSave()
+    return res.data?.message || 'Excel file appended successfully.'
+  } catch (err) {
+    const body = err.response?.data || {}
+
+    if (body.error === 'NO_ACTIVE_WORKBOOK') {
+      const filename = window.prompt('No active Excel workbook yet. Enter a name for the new workbook:')
+      if (!filename || !filename.trim()) return null
+      await api.post('/documents/new-excel-file', { filename: filename.trim() })
+    } else if (body.error === 'NEED_NEW_WORKBOOK') {
+      const filename = window.prompt(`${body.message}\n\nEnter a name for the ${body.year} workbook:`, `Bills_${body.year}`)
+      if (!filename || !filename.trim()) return null
+      await api.post('/documents/new-excel-file', { filename: filename.trim() })
+    } else {
+      // Surface the exact server-side reason - never a generic message.
+      throw Object.assign(err, { userMessage: body.message || body.error || err.userMessage })
+    }
+
+    // Retry once after creating the workbook.
+    const res = await doSave()
+    return res.data?.message || 'Excel file appended successfully.'
+  }
+}
+
+// Download the current active Excel workbook (dashboard Export). Blob responses
+// hide JSON error bodies, so 400/404 bodies are re-parsed from blob text.
+export async function downloadWorkbook(year = null) {
   let res
   try {
-    res = await doExport()
+    res = await api.get('/documents/workbook/download', {
+      params: year ? { year } : {},
+      responseType: 'blob',
+    })
   } catch (err) {
     let body = null
     if (err.response?.data instanceof Blob) {
@@ -34,22 +68,12 @@ export async function exportDocument(docId) {
     } else {
       body = err.response?.data || null
     }
-
-    if (body?.error === 'NO_ACTIVE_FILE') {
-      const filename = window.prompt('No active Excel file yet. Enter a name for the new export file:')
-      if (!filename || !filename.trim()) return false
-      await api.post('/documents/new-excel-file', { filename: filename.trim() })
-      res = await doExport()
-    } else {
-      throw Object.assign(err, { userMessage: body?.error || body?.message || err.userMessage })
-    }
+    throw Object.assign(err, { userMessage: body?.message || body?.error || err.userMessage })
   }
 
-  // Use the server's filename (Content-Disposition) so the download matches
-  // the active workbook name instead of a generic "export.xlsx".
   const disposition = res.headers?.['content-disposition'] || ''
   const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^\";]+)"?/i)
-  const filename = match ? decodeURIComponent(match[1]) : 'export.xlsx'
+  const filename = match ? decodeURIComponent(match[1]) : 'workbook.xlsx'
 
   const url = window.URL.createObjectURL(new Blob([res.data]))
   const a = document.createElement('a')

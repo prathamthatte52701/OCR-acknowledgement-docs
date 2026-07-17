@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { exportDocument } from '../utils/api'
+import { saveDocument } from '../utils/api'
 
 const statusStyles = {
   uploaded: 'border-sky-400/25 bg-sky-400/10 text-sky-300',
@@ -29,11 +29,12 @@ function displayNumber(doc) {
   return doc.number || '-'
 }
 
-async function handleExport(docId) {
+async function handleSave(docId) {
   try {
-    await exportDocument(docId)
+    const message = await saveDocument(docId)
+    if (message) alert(message) // "Excel file appended successfully."
   } catch (err) {
-    alert(err.userMessage || 'Export failed.')
+    alert(err.userMessage || 'Failed to append to the Excel file.')
   }
 }
 
@@ -72,14 +73,14 @@ export default function DocumentCard({ doc }) {
         </Link>
         {status === 'processed' ? (
           <button
-            onClick={() => handleExport(doc._id)}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-blue-500 px-3 py-3 text-[14.7px] font-black text-white shadow-[0_16px_38px_rgba(37,99,235,0.28)] transition-all hover:-translate-y-0.5 hover:shadow-[0_18px_48px_rgba(37,99,235,0.38)]"
+            onClick={() => handleSave(doc._id)}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-3 py-3 text-[14.7px] font-black text-white shadow-[0_16px_38px_rgba(16,185,129,0.28)] transition-all hover:-translate-y-0.5 hover:shadow-[0_18px_48px_rgba(16,185,129,0.38)]"
           >
-            Export
+            Save
           </button>
         ) : (
           <span className="inline-flex cursor-not-allowed items-center justify-center rounded-xl border border-white/8 bg-white/[0.025] px-3 py-3 text-[14.7px] font-bold text-slate-600">
-            Export
+            Save
           </span>
         )}
       </div>

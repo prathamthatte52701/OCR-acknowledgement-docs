@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import api, { exportDocument } from '../utils/api'
+import api, { saveDocument } from '../utils/api'
 import CorrectionModal from '../components/CorrectionModal'
 import LoadingState from '../components/LoadingState'
 import ErrorMessage from '../components/ErrorMessage'
@@ -46,7 +46,7 @@ export default function DocumentDetailPage() {
   const [reprocessing, setReprocessing] = useState(false)
   const [reprocessMsg, setReprocessMsg] = useState('')
   const [deleting, setDeleting] = useState(false)
-  const [exporting, setExporting] = useState(false)
+  const [saving, setSaving] = useState(false)
 
   async function fetchDoc() {
     try {
@@ -101,14 +101,15 @@ export default function DocumentDetailPage() {
     }
   }
 
-  async function handleExport() {
-    setExporting(true)
+  async function handleSave() {
+    setSaving(true)
     try {
-      await exportDocument(id)
+      const message = await saveDocument(id)
+      if (message) alert(message) // "Excel file appended successfully."
     } catch (err) {
-      alert(err.userMessage || 'Export failed.')
+      alert(err.userMessage || 'Failed to append to the Excel file.')
     } finally {
-      setExporting(false)
+      setSaving(false)
     }
   }
 
@@ -191,8 +192,8 @@ export default function DocumentDetailPage() {
           </Link>
         )}
         {doc.uploadStatus === 'processed' && (
-          <button onClick={handleExport} disabled={exporting} className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-[14.7px] font-medium rounded-lg transition-colors">
-            {exporting ? 'Exporting...' : 'Export'}
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-[14.7px] font-medium rounded-lg transition-colors">
+            {saving ? 'Saving...' : 'Save to Excel'}
           </button>
         )}
         <button onClick={handleDownload} className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-[14.7px] rounded-lg transition-colors">

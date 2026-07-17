@@ -23,6 +23,7 @@ async function drainQueue() {
 const Document = require('../models/Document')
 const Correction = require('../models/Correction')
 const Settings = require('../models/Settings')
+const Workbook = require('../models/Workbook')
 const ExportedRow = require('../models/ExportedRow')
 const { uploadBuffer, downloadBuffer, deleteFile } = require('../services/gridfs')
 const { extractHeaderText } = require('../services/ocr')
@@ -237,6 +238,48 @@ router.get('/', async (req, res) => {
   }
 })
 
+// GET /api/documents/workbooks - list every workbook (active + archived),
+// newest year first. Registered before /:id so "workbooks" isn't read as an id.
+router.get('/workbooks', async (req, res) => {
+  try {
+    const Workbook = require('../models/Workbook')
+    const workbooks = await Workbook.find({}).sort({ year: -1 }).lean()
+    const settings = await Settings.findOne({ key: 'excelState' })
+    res.json({ workbooks, active: settings?.activeWorkbookName || null, activeYear: settings?.activeYear || null })
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to list workbooks.' })
+  }
+})
+
+// GET /api/documents/workbook/download?year=YYYY - download a workbook file.
+// Defaults to the active workbook when no year is given (dashboard Export).
+router.get('/workbook/download', async (req, res) => {
+  try {
+    const Workbook = require('../models/Workbook')
+    let filename
+    if (req.query.year) {
+      const wb = await Workbook.findOne({ year: Number(req.query.year) })
+      if (!wb) return res.status(404).json({ error: 'No workbook for that year.' })
+      filename = wb.filename
+    } else {
+      const settings = await Settings.findOne({ key: 'excelState' })
+      if (!settings || !settings.activeWorkbookName) {
+        return res.status(400).json({ error: 'NO_ACTIVE_WORKBOOK', message: 'No active Excel workbook yet. Save a document first.' })
+      }
+      filename = settings.activeWorkbookName
+    }
+
+    const target = excel.filePath(filename)
+    if (!require('fs').existsSync(target)) {
+      return res.status(404).json({ error: 'Workbook file not found on the server.' })
+    }
+    res.download(target)
+  } catch (err) {
+    console.error('Workbook download error:', err)
+    res.status(500).json({ error: 'Failed to download the workbook.' })
+  }
+})
+
 // GET /api/documents/:id
 router.get('/:id', async (req, res) => {
   try {
@@ -363,8 +406,14 @@ router.patch('/:id/correct', async (req, res) => {
   }
 })
 
-// POST /api/documents/new-excel-file - starts (or resets) the active export
-// workbook. Body: { filename }.
+function getSettings() {
+  return Settings.findOne({ key: 'excelState' })
+}
+
+// POST /api/documents/new-excel-file - creates (or replaces) the active yearly
+// workbook. Body: { filename }. Used for the first-ever workbook and when the
+// year rolls over (a new workbook per year). The previous active workbook, if
+// any, is archived (kept on disk, marked isActive:false) - never overwritten.
 router.post('/new-excel-file', async (req, res) => {
   try {
     const { filename } = req.body
@@ -372,22 +421,38 @@ router.post('/new-excel-file', async (req, res) => {
       return res.status(400).json({ error: 'filename is required.' })
     }
     const trimmed = filename.trim()
-    await excel.createNewFile(trimmed)
-    await Settings.findOneAndUpdate(
-      { key: 'activeExcelFile' },
-      { $set: { filename: trimmed } },
+    const { year, month } = excel.currentPeriod()
+
+    // Archive the currently active workbook of a DIFFERENT year (year rollover).
+    // Same-year "start new file" just replaces the pointer.
+    await Workbook.updateMany(
+      { isActive: true, year: { $ne: year } },
+      { $set: { isActive: false, archivedAt: new Date() } }
+    )
+
+    await excel.createWorkbook(trimmed, month)
+    await Workbook.findOneAndUpdate(
+      { year },
+      { $set: { filename: trimmed, isActive: true, archivedAt: null } },
       { upsert: true }
     )
-    res.json({ message: 'New Excel file started.', filename: trimmed })
+    await Settings.findOneAndUpdate(
+      { key: 'excelState' },
+      { $set: { activeWorkbookName: trimmed, activeYear: year } },
+      { upsert: true }
+    )
+    res.json({ message: 'New Excel workbook started.', filename: trimmed, year })
   } catch (err) {
     console.error('new-excel-file error:', err)
-    res.status(500).json({ error: 'Failed to start a new Excel file.' })
+    res.status(500).json({ error: 'Failed to start a new Excel workbook.' })
   }
 })
 
-// POST /api/documents/:id/export - appends this document's row to the active
-// workbook and logs an ExportedRow, then streams the file back for download.
-router.post('/:id/export', async (req, res) => {
+// POST /api/documents/:id/save - appends this document's row to the CURRENT
+// month's worksheet in the active workbook. No download. Handles automatic
+// monthly worksheet switching (appendRow creates the month sheet if missing)
+// and signals year rollover so the frontend can prompt for a new workbook name.
+router.post('/:id/save', async (req, res) => {
   try {
     const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
     if (!doc) return res.status(404).json({ error: 'Document not found.' })
@@ -395,9 +460,26 @@ router.post('/:id/export', async (req, res) => {
       return res.status(400).json({ error: 'Document has not been processed yet.' })
     }
 
-    const settings = await Settings.findOne({ key: 'activeExcelFile' })
-    if (!settings || !settings.filename) {
-      return res.status(400).json({ error: 'NO_ACTIVE_FILE', message: 'No active Excel file. Start one first.' })
+    const { year, month } = excel.currentPeriod()
+    const settings = await getSettings()
+
+    if (!settings || !settings.activeWorkbookName) {
+      return res.status(400).json({ error: 'NO_ACTIVE_WORKBOOK', message: 'No active Excel workbook. Start one first.' })
+    }
+
+    // Year rollover: archive the old workbook and ask the frontend to create a
+    // new one for the new year (prompts the user once for its name, then retries
+    // this save). Previous year's file stays on disk, untouched.
+    if (settings.activeYear !== year) {
+      await Workbook.updateMany(
+        { isActive: true, year: settings.activeYear },
+        { $set: { isActive: false, archivedAt: new Date() } }
+      )
+      return res.status(409).json({
+        error: 'NEED_NEW_WORKBOOK',
+        year,
+        message: `The year changed to ${year}. Create a new workbook for ${year} to continue.`,
+      })
     }
 
     const row = {
@@ -409,7 +491,7 @@ router.post('/:id/export', async (req, res) => {
       timestamp: new Date().toISOString(),
     }
 
-    const target = await excel.appendRow(settings.filename, row)
+    await excel.appendRow(settings.activeWorkbookName, month, row)
 
     await ExportedRow.create({
       documentId: doc._id,
@@ -420,13 +502,15 @@ router.post('/:id/export', async (req, res) => {
       date: row.date,
     })
 
-    res.download(target)
+    res.json({ message: 'Excel file appended successfully.', worksheet: month, workbook: settings.activeWorkbookName })
   } catch (err) {
-    console.error('Export error:', err)
+    console.error('Save error:', err)
+    // Surface the exact reason (locked file, permission, etc.) to the user
+    // instead of a generic message.
     if (err.code === 'FILE_LOCKED') {
       return res.status(409).json({ error: err.message })
     }
-    res.status(500).json({ error: 'Failed to export document.' })
+    res.status(500).json({ error: err.message || 'Failed to append to the Excel file.' })
   }
 })
 
