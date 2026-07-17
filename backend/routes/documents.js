@@ -460,7 +460,7 @@ router.post('/:id/save', async (req, res) => {
       return res.status(400).json({ error: 'Document has not been processed yet.' })
     }
 
-    const { year, month } = excel.currentPeriod()
+    const { year } = excel.currentPeriod()
     const settings = await getSettings()
 
     if (!settings || !settings.activeWorkbookName) {
@@ -491,7 +491,10 @@ router.post('/:id/save', async (req, res) => {
       timestamp: new Date().toISOString(),
     }
 
-    await excel.appendRow(settings.activeWorkbookName, month, row)
+    // Worksheet = the document's OWN date, not today's date - a document dated
+    // 30/06 always lands in the June sheet even if saved in July.
+    const sheetMonth = excel.monthFromDate(doc.date)
+    await excel.appendRow(settings.activeWorkbookName, sheetMonth, row)
 
     await ExportedRow.create({
       documentId: doc._id,
@@ -502,7 +505,7 @@ router.post('/:id/save', async (req, res) => {
       date: row.date,
     })
 
-    res.json({ message: 'Excel file appended successfully.', worksheet: month, workbook: settings.activeWorkbookName })
+    res.json({ message: 'Excel file appended successfully.', worksheet: sheetMonth, workbook: settings.activeWorkbookName })
   } catch (err) {
     console.error('Save error:', err)
     // Surface the exact reason (locked file, permission, etc.) to the user

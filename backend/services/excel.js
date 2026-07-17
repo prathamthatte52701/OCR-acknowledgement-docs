@@ -16,11 +16,23 @@ function filePath(filename) {
   return path.join(EXPORT_DIR, safe.endsWith('.xlsx') ? safe : `${safe}.xlsx`)
 }
 
-// Current period from the real clock - drives which monthly worksheet a save
-// lands in and which yearly workbook is active. Kept in one place so month/year
-// rollover is detected consistently everywhere.
+// Current period from the real clock - drives which yearly workbook is active
+// (year rollover). Kept in one place so year rollover is detected consistently.
 function currentPeriod(now = new Date()) {
   return { year: now.getFullYear(), month: MONTHS[now.getMonth()] }
+}
+
+// Worksheet month comes from the DOCUMENT'S OWN extracted date (DD/MM/YYYY),
+// not the day it happens to be saved on - a document dated 30/06 always lands
+// in the June sheet, even if you save it in July. Falls back to the current
+// real month when the date couldn't be extracted, so the document still saves
+// somewhere instead of failing outright.
+function monthFromDate(dateStr, fallbackNow = new Date()) {
+  const match = typeof dateStr === 'string' && dateStr.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+  if (!match) return currentPeriod(fallbackNow).month
+  const mm = Number(match[2])
+  if (mm < 1 || mm > 12) return currentPeriod(fallbackNow).month
+  return MONTHS[mm - 1]
 }
 
 function addHeaderRow(sheet) {
@@ -94,4 +106,4 @@ async function appendRowNow(filename, month, row) {
   return target
 }
 
-module.exports = { createWorkbook, appendRow, filePath, currentPeriod, EXPORT_DIR, MONTHS }
+module.exports = { createWorkbook, appendRow, filePath, currentPeriod, monthFromDate, EXPORT_DIR, MONTHS }
