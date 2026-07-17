@@ -1,5 +1,6 @@
-import { Outlet, NavLink } from 'react-router-dom'
+import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
+import { useAuth } from '../context/AuthContext'
 
 const navLinks = [
   { to: '/', label: 'Dashboard', exact: true },
@@ -9,6 +10,14 @@ const navLinks = [
 
 export default function AppLayout() {
   const [menuOpen, setMenuOpen] = useState(false)
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
+  const initials = (user?.username || '??').slice(0, 2).toUpperCase()
+
+  function handleLogout() {
+    logout()
+    navigate('/login', { replace: true })
+  }
 
   return (
     <div className="min-h-screen bg-[#020817] text-slate-100 flex flex-col">
@@ -46,20 +55,17 @@ export default function AppLayout() {
           </nav>
 
           <div className="hidden items-center gap-3 md:flex">
+            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] py-1 pl-1 pr-3">
+              <span className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-blue-500 to-cyan-400 text-[12.6px] font-bold text-white">{initials}</span>
+              <span className="text-[12.6px] font-semibold text-slate-300">{user?.username}</span>
+            </div>
             <button
               type="button"
-              aria-label="Notifications"
-              className="grid h-9 w-9 place-items-center rounded-full border border-white/10 bg-white/[0.035] text-slate-400 transition-colors hover:border-blue-300/30 hover:text-blue-100"
+              onClick={handleLogout}
+              className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-[12.6px] font-bold text-slate-300 transition-colors hover:border-rose-300/30 hover:bg-rose-500/10 hover:text-rose-200"
             >
-              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
-                <path d="M13.7 21a2 2 0 0 1-3.4 0" />
-              </svg>
+              Log out
             </button>
-            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] py-1 pl-1 pr-3">
-              <span className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-blue-500 to-cyan-400 text-[12.6px] font-bold text-white">BO</span>
-              <span className="text-[12.6px] font-semibold text-slate-300">Business Owner</span>
-            </div>
           </div>
 
           {/* Mobile menu button */}
@@ -97,6 +103,13 @@ export default function AppLayout() {
                 {link.label}
               </NavLink>
             ))}
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-lg px-3 py-2 text-left text-[14.7px] font-semibold text-rose-300 transition-colors hover:bg-rose-500/10"
+            >
+              Log out ({user?.username})
+            </button>
           </div>
         )}
       </header>

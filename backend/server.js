@@ -24,8 +24,15 @@ process.on('unhandledRejection', (reason) => {
   console.error('UNHANDLED REJECTION (server kept running):', reason)
 })
 
+if (!process.env.JWT_SECRET) {
+  console.error('ERROR JWT_SECRET is not set - refusing to start (sessions would be forgeable).')
+  process.exit(1)
+}
+
+const authRouter = require('./routes/auth')
 const documentsRouter = require('./routes/documents')
 const chatRouter = require('./routes/chat')
+const { requireAuth } = require('./middleware/auth')
 
 const app = express()
 const PORT = process.env.PORT || 5002
@@ -38,9 +45,11 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
-// API routes
-app.use('/api/documents', documentsRouter)
-app.use('/api/documents/:id/chat', chatRouter)
+// API routes - signup/login are the only unauthenticated document routes;
+// everything else requires a valid session.
+app.use('/api/auth', authRouter)
+app.use('/api/documents', requireAuth, documentsRouter)
+app.use('/api/documents/:id/chat', requireAuth, chatRouter)
 
 // Health check
 app.get('/api/health', (req, res) => {

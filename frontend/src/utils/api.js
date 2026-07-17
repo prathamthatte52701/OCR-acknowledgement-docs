@@ -1,8 +1,26 @@
 import axios from 'axios'
 
+const TOKEN_KEY = 'ackintel_token'
+
+export function getToken() {
+  return localStorage.getItem(TOKEN_KEY)
+}
+export function setToken(token) {
+  localStorage.setItem(TOKEN_KEY, token)
+}
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY)
+}
+
 const api = axios.create({
   baseURL: '/api',
   timeout: 120000, // 2 min for OCR processing
+})
+
+api.interceptors.request.use((config) => {
+  const token = getToken()
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
 })
 
 api.interceptors.response.use(
@@ -10,6 +28,20 @@ api.interceptors.response.use(
   (err) => {
     const message = err.response?.data?.error || err.message || 'Something went wrong.'
     err.userMessage = message
+
+    // Session expired/invalid - drop the stale token and bounce to login,
+    // preserving the page the user was on so they land back there after
+    // logging in again. Skip this for the auth endpoints themselves (a wrong
+    // password on the login form is not a "session expired" event).
+    const isAuthRoute = err.config?.url?.startsWith('/auth/')
+    if (err.response?.status === 401 && !isAuthRoute) {
+      clearToken()
+      const next = encodeURIComponent(window.location.pathname + window.location.search)
+      if (!window.location.pathname.startsWith('/login')) {
+        window.location.href = `/login?next=${next}`
+      }
+    }
+
     return Promise.reject(err)
   }
 )
