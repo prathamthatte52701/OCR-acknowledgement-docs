@@ -55,10 +55,15 @@ export default function AppLayout() {
           </nav>
 
           <div className="hidden items-center gap-3 md:flex">
-            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] py-1 pl-1 pr-3">
+            <NavLink
+              to="/profile"
+              className={({ isActive }) =>
+                `flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] py-1 pl-1 pr-3 no-underline transition-colors hover:border-blue-300/30 ${isActive ? 'border-blue-300/30' : ''}`
+              }
+            >
               <span className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-blue-500 to-cyan-400 text-[12.6px] font-bold text-white">{initials}</span>
               <span className="text-[12.6px] font-semibold text-slate-300">{user?.username}</span>
-            </div>
+            </NavLink>
             <button
               type="button"
               onClick={handleLogout}
@@ -103,12 +108,23 @@ export default function AppLayout() {
                 {link.label}
               </NavLink>
             ))}
+            <NavLink
+              to="/profile"
+              onClick={() => setMenuOpen(false)}
+              className={({ isActive }) =>
+                `rounded-lg px-3 py-2 text-[14.7px] font-semibold no-underline transition-colors ${
+                  isActive ? 'bg-blue-500/15 text-blue-100' : 'text-slate-400 hover:bg-white/[0.045] hover:text-white'
+                }`
+              }
+            >
+              Profile ({user?.username})
+            </NavLink>
             <button
               type="button"
               onClick={handleLogout}
               className="rounded-lg px-3 py-2 text-left text-[14.7px] font-semibold text-rose-300 transition-colors hover:bg-rose-500/10"
             >
-              Log out ({user?.username})
+              Log out
             </button>
           </div>
         )}

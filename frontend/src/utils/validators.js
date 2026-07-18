@@ -27,5 +27,8 @@ export function validatePassword(password) {
   if (typeof password !== 'string' || !PASSWORD_RE.test(password)) {
     return 'Password must be 8-32 characters and include an uppercase letter, a lowercase letter, a number, and a special character.'
   }
+  if (/\s/.test(password)) {
+    return 'Password cannot contain spaces or whitespace.'
+  }
   return null
 }

@@ -1,19 +1,23 @@
 import { useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import PasswordInput from '../components/PasswordInput'
 
 export default function LoginPage() {
   const { login } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const [searchParams] = useSearchParams()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [success, setSuccess] = useState(location.state?.success || '')
   const [submitting, setSubmitting] = useState(false)
 
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
+    setSuccess('')
     setSubmitting(true)
     try {
       await login(email, password)
@@ -48,16 +52,23 @@ export default function LoginPage() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-[12.6px] font-semibold text-slate-400">Password</label>
-            <input
-              type="password"
+            <div className="mb-1 flex items-center justify-between">
+              <label className="block text-[12.6px] font-semibold text-slate-400">Password</label>
+              <Link to="/forgot-password" className="text-[12.6px] font-semibold text-blue-300 no-underline hover:text-blue-200">Forgot password?</Link>
+            </div>
+            <PasswordInput
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
               required
-              className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3.5 py-2.5 text-[14.7px] text-white outline-none transition-colors focus:border-blue-300/60"
             />
           </div>
+
+          {success && (
+            <div className="rounded-xl border border-emerald-400/25 bg-emerald-500/10 px-3.5 py-2.5 text-[13.6px] text-emerald-200">
+              {success}
+            </div>
+          )}
 
           {error && (
             <div className="rounded-xl border border-rose-400/25 bg-rose-500/10 px-3.5 py-2.5 text-[13.6px] text-rose-200">

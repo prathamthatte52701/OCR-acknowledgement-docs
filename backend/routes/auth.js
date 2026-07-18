@@ -55,6 +55,19 @@ const signupLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many signup attempts. Please try again later.' },
 })
+// Forgot-password has no OTP/email step gating it, so the username+email
+// match check IS the only brute-force surface - throttled the same as login.
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts. Please try again in a few minutes.' },
+})
+// Same non-field-specific wording as GENERIC_SIGNUP_ERROR and for the same
+// reason - must not reveal whether the username or the email was the one
+// that didn't match.
+const GENERIC_FORGOT_PASSWORD_ERROR = 'Username and email do not match our records.'
 
 function signToken(userId, tokenVersion) {
   return jwt.sign({ userId, tokenVersion }, process.env.JWT_SECRET, { expiresIn: TOKEN_TTL })
@@ -101,8 +114,7 @@ router.post('/signup', signupLimiter, async (req, res) => {
       throw err
     }
 
-    const token = signToken(user._id.toString(), user.tokenVersion)
-    res.status(201).json({ token, user: { id: user._id, username: user.username, email: user.email } })
+    res.status(201).json({ message: 'Account created. Please log in.' })
   } catch (err) {
     console.error('Signup error:', err)
     res.status(500).json({ error: 'We could not create your account right now. Please try again in a moment.' })
@@ -142,6 +154,127 @@ router.get('/me', requireAuth, async (req, res) => {
   const user = await User.findById(req.userId).select('username email')
   if (!user) return res.status(401).json({ error: 'Not authenticated.' })
   res.json({ user: { id: user._id, username: user.username, email: user.email } })
+})
+
+// PATCH /api/auth/me - update the logged-in user's username/email. Same
+// validation and duplicate-email handling as signup.
+router.patch('/me', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId)
+    if (!user) return res.status(401).json({ error: 'Not authenticated.' })
+
+    if (req.body.username !== undefined) {
+      const username = normalizeUsername(req.body.username)
+      const usernameErr = validateUsername(username)
+      if (usernameErr) return res.status(400).json({ error: usernameErr })
+      user.username = username
+    }
+
+    if (req.body.email !== undefined) {
+      const email = normalizeEmail(req.body.email)
+      const emailErr = validateEmail(email)
+      if (emailErr) return res.status(400).json({ error: emailErr })
+      if (email !== user.email) {
+        const existing = await User.findOne({ email })
+        if (existing) return res.status(400).json({ error: 'That email is already in use.' })
+        user.email = email
+      }
+    }
+
+    await user.save()
+    res.json({ user: { id: user._id, username: user.username, email: user.email } })
+  } catch (err) {
+    console.error('Profile update error:', err)
+    res.status(500).json({ error: 'We could not update your profile right now. Please try again in a moment.' })
+  }
+})
+
+// POST /api/auth/change-password - requires the current password, applies
+// the same rules as signup to the new one, then bumps tokenVersion so every
+// previously-issued token (including ones from other devices) stops working -
+// the same soft-revocation the auth middleware already checks for.
+router.post('/change-password', requireAuth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword, confirmNewPassword } = req.body
+    if (typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
+      return res.status(400).json({ error: 'Current and new password are required.' })
+    }
+    if (newPassword !== confirmNewPassword) {
+      return res.status(400).json({ error: 'New password and confirmation do not match.' })
+    }
+
+    const user = await User.findById(req.userId)
+    if (!user) return res.status(401).json({ error: 'Not authenticated.' })
+
+    const match = await bcrypt.compare(currentPassword, user.passwordHash)
+    if (!match) return res.status(400).json({ error: 'Current password is incorrect.' })
+
+    const passwordErr = validatePassword(newPassword)
+    if (passwordErr) return res.status(400).json({ error: passwordErr })
+
+    user.passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS)
+    user.tokenVersion += 1
+    await user.save()
+
+    // Re-issue a fresh token carrying the new tokenVersion so the tab that
+    // just changed the password doesn't get logged out too - only every
+    // OTHER previously-issued token is now invalid.
+    const token = signToken(user._id.toString(), user.tokenVersion)
+    res.json({ token, user: { id: user._id, username: user.username, email: user.email } })
+  } catch (err) {
+    console.error('Change password error:', err)
+    res.status(500).json({ error: 'We could not change your password right now. Please try again in a moment.' })
+  }
+})
+
+// POST /api/auth/forgot-password/verify - checks a username+email pair
+// against the same account before the frontend shows the "set new password"
+// form. No OTP/token issued by design - the reset call below re-verifies the
+// same pair itself, so this step is UX gating only, never trusted alone.
+router.post('/forgot-password/verify', forgotPasswordLimiter, async (req, res) => {
+  try {
+    const { username, email } = req.body
+    if (typeof username !== 'string' || typeof email !== 'string') {
+      return res.status(400).json({ error: 'Username and email are required.' })
+    }
+    const user = await User.findOne({ username: normalizeUsername(username), email: normalizeEmail(email) })
+    if (!user) return res.status(400).json({ error: GENERIC_FORGOT_PASSWORD_ERROR })
+    res.json({ verified: true })
+  } catch (err) {
+    console.error('Forgot-password verify error:', err)
+    res.status(500).json({ error: 'We could not verify your details right now. Please try again in a moment.' })
+  }
+})
+
+// POST /api/auth/forgot-password/reset - re-verifies the same username+email
+// pair (never trusts that verify was called first) then sets the new
+// password, applying the same rules as signup/change-password and bumping
+// tokenVersion to invalidate every previously-issued token, same as change-password.
+router.post('/forgot-password/reset', forgotPasswordLimiter, async (req, res) => {
+  try {
+    const { username, email, newPassword, confirmNewPassword } = req.body
+    if (typeof username !== 'string' || typeof email !== 'string' || typeof newPassword !== 'string') {
+      return res.status(400).json({ error: 'Username, email, and new password are required.' })
+    }
+    if (newPassword !== confirmNewPassword) {
+      return res.status(400).json({ error: 'New password and confirmation do not match.' })
+    }
+
+    const user = await User.findOne({ username: normalizeUsername(username), email: normalizeEmail(email) })
+    if (!user) return res.status(400).json({ error: GENERIC_FORGOT_PASSWORD_ERROR })
+
+    const passwordErr = validatePassword(newPassword)
+    if (passwordErr) return res.status(400).json({ error: passwordErr })
+
+    user.passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS)
+    user.tokenVersion += 1
+    await user.save()
+
+    res.json({ message: 'Password updated successfully.' })
+  } catch (err) {
+    console.error('Forgot-password reset error:', err)
+    res.status(500).json({ error: 'We could not reset your password right now. Please try again in a moment.' })
+  }
 })
 
 module.exports = router

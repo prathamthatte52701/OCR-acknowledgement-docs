@@ -25,6 +25,15 @@ const documentSchema = new mongoose.Schema({
   number: { type: String, default: null },
   date: { type: String, default: null }, // DD/MM/YYYY
 
+  // 0-100, null = no extraction attempted yet (e.g. document still processing).
+  // See services/groq.js for how these are derived - no per-field score is
+  // available from Tesseract in this pipeline, so this is the AI-uncertainty
+  // signal described there instead.
+  taxInvoiceNoConfidence: { type: Number, default: null },
+  referenceNoConfidence: { type: Number, default: null },
+  numberConfidence: { type: Number, default: null },
+  dateConfidence: { type: Number, default: null },
+
   edited: { type: Boolean, default: false },
   ocrTextHidden: String,
 

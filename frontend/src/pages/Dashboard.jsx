@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import api, { downloadWorkbook } from '../utils/api'
+import LoadingState from '../components/LoadingState'
 import challanRouteVisual from '../assets/transport-bill-route-visual.png'
 
 const features = [
@@ -60,6 +61,8 @@ function MiniSparkline({ color = 'blue' }) {
     green: '#34d399',
     red: '#fb7185',
     violet: '#a78bfa',
+    amber: '#fbbf24',
+    cyan: '#22d3ee',
   }[color]
 
   return (
@@ -82,6 +85,8 @@ function StatCard({ icon, label, value, helper, color }) {
     green: 'from-emerald-500/20 to-cyan-400/5 border-emerald-300/15 text-emerald-200 shadow-emerald-950/20',
     red: 'from-rose-500/20 to-orange-400/5 border-rose-300/15 text-rose-200 shadow-rose-950/20',
     violet: 'from-violet-500/20 to-blue-400/5 border-violet-300/15 text-violet-200 shadow-violet-950/20',
+    amber: 'from-amber-500/20 to-orange-400/5 border-amber-300/15 text-amber-200 shadow-amber-950/20',
+    cyan: 'from-cyan-500/20 to-blue-400/5 border-cyan-300/15 text-cyan-200 shadow-cyan-950/20',
   }
 
   return (
@@ -261,11 +266,12 @@ function FeedbackAnalyticsPanel({ feedback }) {
 }
 
 export default function Dashboard() {
-  const [stats, setStats] = useState({ total: 0, processed: 0, failed: 0, processedToday: 0 })
+  const [stats, setStats] = useState({ total: 0, processed: 0, failed: 0, processedToday: 0, taxInvoice: 0, deliveryChallan: 0 })
   const [recentDocs, setRecentDocs] = useState([])
   const [training, setTraining] = useState({ trainedCount: 0, correctedCount: 0 })
   const [feedback, setFeedback] = useState({ avgRating: 0, totalFeedback: 0, top3: [] })
   const [exporting, setExporting] = useState(false)
+  const [loading, setLoading] = useState(true)
 
   async function handleExport() {
     setExporting(true)
@@ -279,24 +285,38 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
-    api.get('/documents').then(res => {
+    let cancelled = false
+
+    const docsReq = api.get('/documents').then(res => {
+      if (cancelled) return
       const docs = res.data?.documents || []
+      const byDocumentType = res.data?.byDocumentType || {}
       setStats({
         total: docs.length,
         processed: docs.filter(d => d.uploadStatus === 'processed').length,
         failed: docs.filter(d => d.uploadStatus === 'failed').length,
         processedToday: docs.filter(d => d.uploadStatus === 'processed' && isToday(d.processedAt || d.reprocessedAt || d.updatedAt)).length,
+        taxInvoice: byDocumentType['Tax Invoice'] || 0,
+        deliveryChallan: byDocumentType['Delivery Challan'] || 0,
       })
       setRecentDocs(docs.slice(0, 3))
     }).catch(() => {})
 
-    api.get('/documents/training-stats').then(res => {
+    const trainingReq = api.get('/documents/training-stats').then(res => {
+      if (cancelled) return
       setTraining(res.data || { trainedCount: 0, correctedCount: 0 })
     }).catch(() => {})
 
-    api.get('/documents/feedback-stats').then(res => {
+    const feedbackReq = api.get('/documents/feedback-stats').then(res => {
+      if (cancelled) return
       setFeedback(res.data || { avgRating: 0, totalFeedback: 0, top3: [] })
     }).catch(() => {})
+
+    Promise.allSettled([docsReq, trainingReq, feedbackReq]).finally(() => {
+      if (!cancelled) setLoading(false)
+    })
+
+    return () => { cancelled = true }
   }, [])
 
   return (
@@ -349,45 +369,55 @@ export default function Dashboard() {
           <HeroIllustration />
         </section>
 
-        <section className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard icon="TD" label="Total Documents" value={stats.total} helper="Acknowledgements in workspace" color="blue" />
-          <StatCard icon="OK" label="Processed" value={stats.processed} helper="Ready for review and chat" color="green" />
-          <StatCard icon="ER" label="Failed" value={stats.failed} helper="Needs reprocess or review" color="red" />
-          <StatCard icon="24" label="Processed Today" value={stats.processedToday} helper="Completed in today's run" color="violet" />
-        </section>
+        {loading ? (
+          <section className="mt-6 rounded-[28px] border border-blue-300/12 bg-slate-900/68 shadow-2xl shadow-slate-950/30 backdrop-blur-xl">
+            <LoadingState message="Loading dashboard..." />
+          </section>
+        ) : (
+          <>
+            <section className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <StatCard icon="TD" label="Total Documents" value={stats.total} helper="Acknowledgements in workspace" color="blue" />
+              <StatCard icon="OK" label="Processed" value={stats.processed} helper="Ready for review and chat" color="green" />
+              <StatCard icon="ER" label="Failed" value={stats.failed} helper="Needs reprocess or review" color="red" />
+              <StatCard icon="24" label="Processed Today" value={stats.processedToday} helper="Completed in today's run" color="violet" />
+              <StatCard icon="TI" label="Tax Invoice" value={stats.taxInvoice} helper="Documents of this type" color="amber" />
+              <StatCard icon="DC" label="Delivery Challan" value={stats.deliveryChallan} helper="Documents of this type" color="cyan" />
+            </section>
 
-        <section className="mt-6 grid gap-6 lg:grid-cols-[1.12fr_0.88fr]">
-          <div className="rounded-[28px] border border-blue-300/12 bg-slate-900/68 p-5 shadow-2xl shadow-slate-950/30 backdrop-blur-xl sm:p-6">
-            <div className="mb-5 flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-black tracking-tight text-white">Recent Documents</h2>
-                <p className="mt-1 text-[14.7px] text-slate-500">Latest acknowledgements processed by AckIntel AI</p>
+            <section className="mt-6 grid gap-6 lg:grid-cols-[1.12fr_0.88fr]">
+              <div className="rounded-[28px] border border-blue-300/12 bg-slate-900/68 p-5 shadow-2xl shadow-slate-950/30 backdrop-blur-xl sm:p-6">
+                <div className="mb-5 flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-xl font-black tracking-tight text-white">Recent Documents</h2>
+                    <p className="mt-1 text-[14.7px] text-slate-500">Latest acknowledgements processed by AckIntel AI</p>
+                  </div>
+                  <Link to="/documents" className="shrink-0 rounded-full border border-blue-300/20 bg-blue-500/10 px-4 py-2 text-[12.6px] font-black uppercase tracking-[0.14em] text-blue-200 no-underline transition-colors hover:bg-blue-500/15">
+                    View all
+                  </Link>
+                </div>
+
+                {recentDocs.length > 0 ? (
+                  <div className="space-y-3">
+                    {recentDocs.map(doc => (
+                      <RecentDocumentRow key={doc._id} doc={doc} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-blue-300/14 bg-white/[0.025] px-5 py-10 text-center">
+                    <p className="text-[14.7px] font-bold text-slate-300">No documents uploaded yet.</p>
+                    <p className="mt-2 text-[14.7px] text-slate-500">Upload an acknowledgement to see recent document activity here.</p>
+                  </div>
+                )}
               </div>
-              <Link to="/documents" className="shrink-0 rounded-full border border-blue-300/20 bg-blue-500/10 px-4 py-2 text-[12.6px] font-black uppercase tracking-[0.14em] text-blue-200 no-underline transition-colors hover:bg-blue-500/15">
-                View all
-              </Link>
-            </div>
 
-            {recentDocs.length > 0 ? (
-              <div className="space-y-3">
-                {recentDocs.map(doc => (
-                  <RecentDocumentRow key={doc._id} doc={doc} />
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-2xl border border-dashed border-blue-300/14 bg-white/[0.025] px-5 py-10 text-center">
-                <p className="text-[14.7px] font-bold text-slate-300">No documents uploaded yet.</p>
-                <p className="mt-2 text-[14.7px] text-slate-500">Upload an acknowledgement to see recent document activity here.</p>
-              </div>
-            )}
-          </div>
+              <QualityPanel stats={stats} training={training} />
+            </section>
 
-          <QualityPanel stats={stats} training={training} />
-        </section>
-
-        <section className="mt-6">
-          <FeedbackAnalyticsPanel feedback={feedback} />
-        </section>
+            <section className="mt-6">
+              <FeedbackAnalyticsPanel feedback={feedback} />
+            </section>
+          </>
+        )}
 
         <section className="mt-10">
           <div className="mb-5 flex items-end justify-between gap-4">

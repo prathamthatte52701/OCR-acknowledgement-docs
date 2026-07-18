@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { validateUsername, validateEmail, validatePassword } from '../utils/validators'
+import PasswordInput from '../components/PasswordInput'
 
 export default function SignupPage() {
   const { signup } = useAuth()
@@ -23,7 +24,7 @@ export default function SignupPage() {
     setSubmitting(true)
     try {
       await signup(username, email.trim().toLowerCase(), password)
-      navigate('/', { replace: true })
+      navigate('/login', { replace: true, state: { success: 'Account created — please log in.' } })
     } catch (err) {
       setError(err.userMessage || 'Could not create your account. Please try again.')
     } finally {
@@ -68,15 +69,13 @@ export default function SignupPage() {
           </div>
           <div>
             <label className="mb-1 block text-[12.6px] font-semibold text-slate-400">Password</label>
-            <input
-              type="password"
+            <PasswordInput
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               minLength={8}
               maxLength={32}
               autoComplete="new-password"
               required
-              className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3.5 py-2.5 text-[14.7px] text-white outline-none transition-colors focus:border-blue-300/60"
             />
             <p className="mt-1 text-[11.6px] text-slate-600">8-32 characters, with uppercase, lowercase, a number, and a special character</p>
           </div>

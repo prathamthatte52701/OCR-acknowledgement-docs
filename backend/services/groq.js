@@ -132,11 +132,31 @@ function normalizeDateToDDMMYYYY(raw) {
   return `${dd}/${mm}/${yyyy}`
 }
 
+// Confidence scoring - no field-level score is available from Tesseract in
+// this pipeline (ocr.js only returns plain header text, not per-word boxes),
+// so this uses the next-best signal already sitting in this function: whether
+// the AI actually returned a value, and whether that value survives the
+// validation/normalization it already goes through below. A number field is
+// additionally sanity-checked for shape (mostly alphanumeric, not a stray
+// fragment) since nothing else validates it the way normalizeDateToDDMMYYYY
+// already validates a date. 0-100 scale; null means "no extraction attempted".
+const PLAUSIBLE_NUMBER_RE = /^[A-Za-z0-9][A-Za-z0-9/-]{2,}$/
+
+function numberConfidence(value) {
+  if (!value) return 0
+  return PLAUSIBLE_NUMBER_RE.test(value.trim()) ? 100 : 40
+}
+
+function dateConfidence(rawDate, normalizedDate) {
+  if (!rawDate) return 0
+  return normalizedDate ? 100 : 30
+}
+
 async function extractHeader(documentType, headerText) {
   if (!headerText || !headerText.trim()) {
     return documentType === 'Tax Invoice'
-      ? { taxInvoiceNo: null, referenceNo: null, date: null }
-      : { number: null, date: null }
+      ? { taxInvoiceNo: null, referenceNo: null, date: null, taxInvoiceNoConfidence: 0, referenceNoConfidence: 0, dateConfidence: 0 }
+      : { number: null, date: null, numberConfidence: 0, dateConfidence: 0 }
   }
 
   const systemPrompt = documentType === 'Tax Invoice' ? TAX_INVOICE_SYSTEM : DELIVERY_CHALLAN_SYSTEM
@@ -152,15 +172,24 @@ async function extractHeader(documentType, headerText) {
 
   const parsed = parseJSON(response.choices[0].message.content)
   const date = normalizeDateToDDMMYYYY(parsed.date)
+  const dateConf = dateConfidence(parsed.date, date)
 
   if (documentType === 'Tax Invoice') {
     return {
       taxInvoiceNo: parsed.taxInvoiceNo || null,
       referenceNo: parsed.referenceNo || null,
       date,
+      taxInvoiceNoConfidence: numberConfidence(parsed.taxInvoiceNo),
+      referenceNoConfidence: numberConfidence(parsed.referenceNo),
+      dateConfidence: dateConf,
     }
   }
-  return { number: parsed.number || null, date }
+  return {
+    number: parsed.number || null,
+    date,
+    numberConfidence: numberConfidence(parsed.number),
+    dateConfidence: dateConf,
+  }
 }
 
 const CHAT_SYSTEM = `You are a helpful assistant answering questions about a single scanned document. Only use the document details given below - never invent information. If the answer isn't in the given details, say so plainly.`

@@ -30,9 +30,7 @@ export function AuthProvider({ children }) {
 
   async function signup(username, email, password) {
     const res = await api.post('/auth/signup', { username, email, password })
-    setToken(res.data.token)
-    setUser(res.data.user)
-    return res.data.user
+    return res.data.message
   }
 
   function logout() {
@@ -40,8 +38,21 @@ export function AuthProvider({ children }) {
     setUser(null)
   }
 
+  async function updateProfile(fields) {
+    const res = await api.patch('/auth/me', fields)
+    setUser(res.data.user)
+    return res.data.user
+  }
+
+  async function changePassword(currentPassword, newPassword, confirmNewPassword) {
+    const res = await api.post('/auth/change-password', { currentPassword, newPassword, confirmNewPassword })
+    setToken(res.data.token)
+    setUser(res.data.user)
+    return res.data.user
+  }
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, signup, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, signup, logout, updateProfile, changePassword }}>
       {children}
     </AuthContext.Provider>
   )

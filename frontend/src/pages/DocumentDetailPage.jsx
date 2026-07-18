@@ -25,15 +25,35 @@ function formatSize(bytes) {
 function fieldsFor(doc) {
   if (doc.documentType === 'Tax Invoice') {
     return [
-      { key: 'taxInvoiceNo', label: 'TAX INVOICE No.', value: doc.taxInvoiceNo },
-      { key: 'referenceNo', label: 'Reference No.', value: doc.referenceNo },
-      { key: 'date', label: 'Date', value: doc.date },
+      { key: 'taxInvoiceNo', label: 'TAX INVOICE No.', value: doc.taxInvoiceNo, confidence: doc.taxInvoiceNoConfidence },
+      { key: 'referenceNo', label: 'Reference No.', value: doc.referenceNo, confidence: doc.referenceNoConfidence },
+      { key: 'date', label: 'Date', value: doc.date, confidence: doc.dateConfidence },
     ]
   }
   return [
-    { key: 'number', label: 'Delivery Challan No.', value: doc.number },
-    { key: 'date', label: 'Date', value: doc.date },
+    { key: 'number', label: 'Delivery Challan No.', value: doc.number, confidence: doc.numberConfidence },
+    { key: 'date', label: 'Date', value: doc.date, confidence: doc.dateConfidence },
   ]
+}
+
+// Threshold matches the spec: anything below ~80, or no score at all
+// (extraction failed/null), is flagged for manual verification.
+const LOW_CONFIDENCE_THRESHOLD = 80
+
+function ConfidenceBadge({ confidence }) {
+  const isLow = confidence == null || confidence < LOW_CONFIDENCE_THRESHOLD
+  if (!isLow) {
+    return (
+      <span title="High confidence" className="shrink-0 grid h-5 w-5 place-items-center rounded-full bg-green-900/30 text-green-400" aria-label="High confidence">
+        <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+      </span>
+    )
+  }
+  return (
+    <span title="Low confidence — please verify" className="shrink-0 grid h-5 w-5 place-items-center rounded-full bg-red-900/30 text-red-400" aria-label="Low confidence — please verify">
+      <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /></svg>
+    </span>
+  )
 }
 
 export default function DocumentDetailPage() {
@@ -213,20 +233,26 @@ export default function DocumentDetailPage() {
       {doc.uploadStatus === 'processed' && !reprocessing && (
         <div className="space-y-3">
           <h3 className="text-gray-300 font-semibold mb-2">Extracted Fields</h3>
-          {fieldsFor(doc).map(f => (
-            <div key={f.key} className="flex items-center justify-between gap-3 bg-gray-900 border border-gray-800 rounded-xl px-4 py-3">
-              <div className="min-w-0">
-                <p className="text-gray-500 text-[12.6px]">{f.label}</p>
-                <p className="text-gray-100 text-[14.7px] font-semibold truncate">{f.value || 'Not available'}</p>
+          {fieldsFor(doc).map(f => {
+            const isLow = f.confidence == null || f.confidence < LOW_CONFIDENCE_THRESHOLD
+            return (
+              <div key={f.key} className={`flex items-center justify-between gap-3 bg-gray-900 border rounded-xl px-4 py-3 ${isLow ? 'border-red-800/60' : 'border-gray-800'}`}>
+                <div className="min-w-0 flex items-center gap-2">
+                  <div className="min-w-0">
+                    <p className="text-gray-500 text-[12.6px]">{f.label}</p>
+                    <p className="text-gray-100 text-[14.7px] font-semibold truncate">{f.value || 'Not available'}</p>
+                  </div>
+                  <ConfidenceBadge confidence={f.confidence} />
+                </div>
+                <button
+                  onClick={() => setEditingField(f)}
+                  className="shrink-0 px-3 py-1.5 text-[12.6px] font-bold text-blue-300 border border-blue-800/50 rounded-lg hover:bg-blue-900/20 transition-colors"
+                >
+                  Edit
+                </button>
               </div>
-              <button
-                onClick={() => setEditingField(f)}
-                className="shrink-0 px-3 py-1.5 text-[12.6px] font-bold text-blue-300 border border-blue-800/50 rounded-lg hover:bg-blue-900/20 transition-colors"
-              >
-                Edit
-              </button>
-            </div>
-          ))}
+            )
+          })}
           {doc.edited && (
             <p className="text-[12.6px] text-amber-400">This document has manually edited fields.</p>
           )}

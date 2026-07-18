@@ -215,6 +215,10 @@ async function processDocument(docId, buffer, mimeType, documentType) {
       referenceNo: result.referenceNo || null,
       number: result.number || null,
       date: result.date || null,
+      taxInvoiceNoConfidence: result.taxInvoiceNoConfidence ?? null,
+      referenceNoConfidence: result.referenceNoConfidence ?? null,
+      numberConfidence: result.numberConfidence ?? null,
+      dateConfidence: result.dateConfidence ?? null,
       processingError: null,
       processedAt: new Date(),
     })
@@ -263,7 +267,11 @@ router.get('/', async (req, res) => {
     const documents = await Document.find({ userId: req.userId, isDeleted: { $ne: true } })
       .sort({ createdAt: -1 })
       .select('-ocrTextHidden')
-    res.json({ documents })
+
+    const byDocumentType = { 'Tax Invoice': 0, 'Delivery Challan': 0 }
+    documents.forEach(d => { if (d.documentType in byDocumentType) byDocumentType[d.documentType]++ })
+
+    res.json({ documents, byDocumentType })
   } catch (err) {
     console.error(err)
     res.status(500).json({ error: 'Failed to fetch documents.' })
@@ -448,6 +456,8 @@ router.patch('/:id/correct', async (req, res) => {
     const oldValue = doc[field]
     doc[field] = value.trim()
     doc.edited = true
+    // Manually verified by the user, so it's no longer a "please verify" case.
+    doc[`${field}Confidence`] = 100
     await doc.save()
 
     await Correction.create({
