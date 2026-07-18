@@ -54,7 +54,7 @@ export default function DocumentsPage() {
       const res = await api.get('/documents')
       setDocuments(res.data?.documents || [])
     } catch (err) {
-      setError(err.userMessage || 'Failed to load documents. Please try again.')
+      setError(err.userMessage || 'Could not load your documents. Please try again.')
     } finally {
       setLoading(false)
     }
@@ -68,7 +68,7 @@ export default function DocumentsPage() {
         if (!cancelled) setDocuments(res.data?.documents || [])
       })
       .catch(err => {
-        if (!cancelled) setError(err.userMessage || 'Failed to load documents. Please try again.')
+        if (!cancelled) setError(err.userMessage || 'Could not load your documents. Please try again.')
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -98,9 +98,9 @@ export default function DocumentsPage() {
                 if (!filename || !filename.trim()) return
                 try {
                   await api.post('/documents/new-excel-file', { filename: filename.trim() })
-                  alert(`New Excel file "${filename.trim()}.xlsx" is now active.`)
+                  alert(`New workbook "${filename.trim()}.xlsx" is ready. Future saves will go into this file.`)
                 } catch (err) {
-                  alert(err.userMessage || 'Failed to start a new Excel file.')
+                  alert(err.userMessage || 'Could not start a new Excel file. Please try again.')
                 }
               }}
               className="inline-flex items-center justify-center gap-2 rounded-2xl border border-blue-300/20 bg-slate-900/60 px-5 py-3 text-[14.7px] font-bold text-blue-200 transition-all hover:border-blue-300/45 hover:bg-blue-500/10"

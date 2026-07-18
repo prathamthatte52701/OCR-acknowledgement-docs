@@ -117,7 +117,7 @@ export default function UploadPage() {
             clearInterval(pollRef.current)
             pollRef.current = null
             setStatus('error')
-            setError(doc.processingError || 'Something went wrong while processing this document.')
+            setError(doc.processingError || 'We could not process this document. Please try uploading it again.')
           } else if (attempts > 90) {
             shouldTimeout = true
           }
@@ -129,12 +129,14 @@ export default function UploadPage() {
           clearInterval(pollRef.current)
           pollRef.current = null
           setStatus('error')
-          setError('Processing timed out. Please try again.')
+          // Processing may still finish on the server even after we stop
+          // waiting here - say that explicitly instead of implying it failed.
+          setError('This is taking longer than expected. It may still finish processing in the background - check My Documents in a minute before uploading again.')
         }
       }, 2000)
     } catch (err) {
       setStatus('error')
-      setError(err.userMessage || 'Something went wrong while processing this document.')
+      setError(err.userMessage || 'Could not upload this document. Please try again.')
     }
   }
 

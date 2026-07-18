@@ -80,9 +80,10 @@ export default function DocumentDetailPage() {
     try {
       await api.patch(`/documents/${id}/correct`, { field: field.key, value: newValue })
       setEditingField(null)
+      alert(`${field.label} updated successfully.`)
       fetchDoc()
     } catch (err) {
-      alert(err.userMessage || 'Failed to save correction.')
+      alert(err.userMessage || 'Could not save your correction. Please try again.')
     }
   }
 
@@ -95,7 +96,7 @@ export default function DocumentDetailPage() {
       setReprocessMsg('Reprocessing started. Check the document status shortly.')
       fetchDoc()
     } catch (err) {
-      setReprocessMsg(err.userMessage || 'Reprocessing failed.')
+      setReprocessMsg(err.userMessage || 'Could not start reprocessing. Please try again.')
     } finally {
       setReprocessing(false)
     }
@@ -107,7 +108,7 @@ export default function DocumentDetailPage() {
       const message = await saveDocument(id)
       if (message) alert(message) // "Excel file appended successfully."
     } catch (err) {
-      alert(err.userMessage || 'Failed to append to the Excel file.')
+      alert(err.userMessage || 'Could not save this document to Excel. Please try again.')
     } finally {
       setSaving(false)
     }
@@ -119,8 +120,8 @@ export default function DocumentDetailPage() {
     try {
       await api.delete(`/documents/${id}`)
       navigate('/documents')
-    } catch {
-      alert('Failed to delete document.')
+    } catch (err) {
+      alert(err.userMessage || 'Could not delete this document. Please try again.')
       setDeleting(false)
     }
   }
@@ -172,7 +173,7 @@ export default function DocumentDetailPage() {
       {doc.uploadStatus === 'failed' && (
         <div className="bg-red-900/20 border border-red-800 rounded-xl p-4 mb-5">
           <p className="text-red-400 font-semibold mb-1">Processing Failed</p>
-          <p className="text-red-300/70 text-[14.7px]">{doc.processingError || 'Something went wrong while processing this document.'}</p>
+          <p className="text-red-300/70 text-[14.7px]">{doc.processingError || 'We could not process this document. Try reprocessing it below.'}</p>
         </div>
       )}
 

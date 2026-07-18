@@ -26,7 +26,12 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    const message = err.response?.data?.error || err.message || 'Something went wrong.'
+    // Prefer the server's own message; fall back to something specific about
+    // WHY there's no server message, instead of a bare "Something went wrong."
+    const fallback = !err.response
+      ? 'Could not connect to the server. Check your internet connection and try again.'
+      : 'Something went wrong. Please try again.'
+    const message = err.response?.data?.error || fallback
     err.userMessage = message
 
     // Session expired/invalid - drop the stale token and bounce to login,

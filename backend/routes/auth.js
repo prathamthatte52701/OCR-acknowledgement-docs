@@ -2,7 +2,7 @@ const express = require('express')
 const router = express.Router()
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
-const rateLimit = require('express-rate-limit')
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit')
 const User = require('../models/User')
 const { requireAuth } = require('../middleware/auth')
 const { normalizeEmail, normalizeUsername, validateUsername, validateEmail, validatePassword } = require('../utils/validators')
@@ -14,15 +14,39 @@ const SALT_ROUNDS = 10
 // none of them stands out as the "email already exists" case in particular.
 const GENERIC_SIGNUP_ERROR = 'Could not create your account. Please check your details and try again.'
 
-// Per-IP throttling - login is brute-forceable and signup is spammable
-// without this. Keyed by IP (express-rate-limit's default), since neither
-// route has an authenticated user yet.
-const loginLimiter = rateLimit({
+// Login throttling is layered, not just per-IP - an office/shared-WiFi has
+// everyone behind one IP, so a single person mistyping their password (or one
+// compromised/malicious account) must not lock out every coworker's IP too.
+//   - Per-EMAIL limiter: the real brute-force guard, tight, keyed on the
+//     account actually being attacked - only that one account's login attempts
+//     count against it, wherever they come from.
+//   - Per-IP limiter: a generous safety net so one IP can't hammer many
+//     DIFFERENT accounts unthrottled by rotating the email on each request.
+// Both must pass for a login attempt to proceed.
+function normalizedLoginEmailKey(req) {
+  const email = req.body?.email
+  // Falls back to the requester's IP (IPv6-safely truncated per express-rate-
+  // limit's own helper) when email is missing/malformed, so a request that
+  // will fail validation anyway still counts against SOME budget instead of
+  // bypassing the limiter entirely.
+  return typeof email === 'string' && email.trim()
+    ? email.trim().toLowerCase()
+    : ipKeyGenerator(req.ip)
+}
+const loginEmailLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 30,
+  limit: 20,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many login attempts. Please try again in a few minutes.' },
+  keyGenerator: normalizedLoginEmailKey,
+  message: { error: 'Too many login attempts for this account. Please try again in a few minutes.' },
+})
+const loginIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts from this network. Please try again in a few minutes.' },
 })
 const signupLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
@@ -81,12 +105,12 @@ router.post('/signup', signupLimiter, async (req, res) => {
     res.status(201).json({ token, user: { id: user._id, username: user.username, email: user.email } })
   } catch (err) {
     console.error('Signup error:', err)
-    res.status(500).json({ error: 'Something went wrong while creating your account.' })
+    res.status(500).json({ error: 'We could not create your account right now. Please try again in a moment.' })
   }
 })
 
 // POST /api/auth/login
-router.post('/login', loginLimiter, async (req, res) => {
+router.post('/login', loginIpLimiter, loginEmailLimiter, async (req, res) => {
   try {
     // Must reject non-string email/password before they ever reach a Mongo
     // query - otherwise a JSON body like {"email":{"$gt":""}} gets passed
@@ -108,7 +132,7 @@ router.post('/login', loginLimiter, async (req, res) => {
     res.json({ token, user: { id: user._id, username: user.username, email: user.email } })
   } catch (err) {
     console.error('Login error:', err)
-    res.status(500).json({ error: 'Something went wrong while logging in.' })
+    res.status(500).json({ error: 'We could not log you in right now. Please try again in a moment.' })
   }
 })
 

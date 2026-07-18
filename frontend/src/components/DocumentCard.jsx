@@ -34,7 +34,7 @@ async function handleSave(docId) {
     const message = await saveDocument(docId)
     if (message) alert(message) // "Excel file appended successfully."
   } catch (err) {
-    alert(err.userMessage || 'Failed to append to the Excel file.')
+    alert(err.userMessage || 'Could not save this document to Excel. Please try again.')
   }
 }
 

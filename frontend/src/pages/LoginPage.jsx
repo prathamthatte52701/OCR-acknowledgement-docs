@@ -20,7 +20,7 @@ export default function LoginPage() {
       const next = searchParams.get('next')
       navigate(next && next.startsWith('/') ? next : '/', { replace: true })
     } catch (err) {
-      setError(err.userMessage || 'Login failed.')
+      setError(err.userMessage || 'Could not log in. Please try again.')
     } finally {
       setSubmitting(false)
     }

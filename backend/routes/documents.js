@@ -137,7 +137,7 @@ router.post('/upload', uploadMiddleware, async (req, res) => {
 
     const documentType = req.body.documentType
     if (!DOCUMENT_TYPES.includes(documentType)) {
-      return res.status(400).json({ error: 'documentType must be "Tax Invoice" or "Delivery Challan".' })
+      return res.status(400).json({ error: 'Please choose a document type - Tax Invoice or Delivery Challan - before uploading.' })
     }
 
     const { buffer, mimetype, originalname, size } = req.file
@@ -190,7 +190,7 @@ async function processDocument(docId, buffer, mimeType, documentType) {
     if (!headerText || !headerText.trim()) {
       await updateActiveDocument(docId, {
         uploadStatus: 'failed',
-        processingError: 'We could not read this document.',
+        processingError: 'We could not read any text from this document. Try a clearer photo or scan, or a higher-quality PDF.',
       })
       return
     }
@@ -418,10 +418,10 @@ router.patch('/:id/correct', async (req, res) => {
   try {
     const { field, value } = req.body
     if (!EDITABLE_FIELDS.includes(field)) {
-      return res.status(400).json({ error: 'field must be one of: ' + EDITABLE_FIELDS.join(', ') })
+      return res.status(400).json({ error: 'That field cannot be edited.' })
     }
     if (!value || !value.trim()) {
-      return res.status(400).json({ error: 'New value is required.' })
+      return res.status(400).json({ error: 'Please enter a value before saving.' })
     }
 
     const doc = await Document.findOne({ _id: req.params.id, userId: req.userId, isDeleted: { $ne: true } })
@@ -432,11 +432,11 @@ router.patch('/:id/correct', async (req, res) => {
     // made in that window - block corrections until processing has actually
     // finished, so there's no race between a manual edit and the OCR result.
     if (doc.uploadStatus !== 'processed' && doc.uploadStatus !== 'failed') {
-      return res.status(409).json({ error: 'This document is still processing. Try again once it completes.' })
+      return res.status(409).json({ error: 'This document is still being processed. Please wait for it to finish before editing.' })
     }
 
     if (!FIELDS_BY_DOCUMENT_TYPE[doc.documentType].includes(field)) {
-      return res.status(400).json({ error: `field "${field}" does not apply to ${doc.documentType} documents.` })
+      return res.status(400).json({ error: `That field cannot be edited on a ${doc.documentType} document.` })
     }
 
     if (field === 'date') {

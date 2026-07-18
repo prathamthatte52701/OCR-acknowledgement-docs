@@ -25,7 +25,7 @@ export default function SignupPage() {
       await signup(username, email.trim().toLowerCase(), password)
       navigate('/', { replace: true })
     } catch (err) {
-      setError(err.userMessage || 'Signup failed.')
+      setError(err.userMessage || 'Could not create your account. Please try again.')
     } finally {
       setSubmitting(false)
     }

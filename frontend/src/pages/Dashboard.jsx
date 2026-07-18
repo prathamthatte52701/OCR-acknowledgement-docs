@@ -272,7 +272,7 @@ export default function Dashboard() {
     try {
       await downloadWorkbook()
     } catch (err) {
-      alert(err.userMessage || 'Failed to download the Excel workbook.')
+      alert(err.userMessage || 'Could not download the Excel workbook. Please try again.')
     } finally {
       setExporting(false)
     }

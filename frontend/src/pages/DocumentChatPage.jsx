@@ -182,7 +182,7 @@ export default function DocumentChatPage() {
         setDoc(docRes.data?.document)
         setMessages(chatRes.data?.messages || [])
       } catch (err) {
-        setError(err.userMessage || 'Failed to load document or chat history.')
+        setError(err.userMessage || 'Could not load this document or its chat history. Please try again.')
       } finally {
         setLoading(false)
       }
@@ -210,7 +210,7 @@ export default function DocumentChatPage() {
     } catch (err) {
       setMessages(prev => [...prev, {
         role: 'assistant',
-        message: err.userMessage || 'Something went wrong. Please try again.',
+        message: err.userMessage || 'Could not get a response. Please try again.',
         createdAt: new Date().toISOString(),
       }])
     } finally {
