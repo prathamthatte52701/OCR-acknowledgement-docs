@@ -47,6 +47,7 @@ const { extractHeader } = require('../services/groq')
 const excel = require('../services/excel')
 const { withTimeout } = require('../utils/withTimeout')
 const { isValidObjectId } = require('../utils/objectId')
+const { logAction } = require('../services/auditLog')
 
 const PDF_PARSE_TIMEOUT_MS = 60000
 
@@ -262,9 +263,35 @@ async function recoverInterruptedUploads() {
 }
 
 // GET /api/documents
+// Paginated only when ?page= is passed (My Documents page). No ?page ->
+// unchanged full-list behavior, since Dashboard relies on getting every
+// document back to compute its stats/recent-docs widget from.
 router.get('/', async (req, res) => {
   try {
-    const documents = await Document.find({ userId: req.userId, isDeleted: { $ne: true } })
+    const filter = { userId: req.userId, isDeleted: { $ne: true } }
+
+    if (req.query.page) {
+      const limit = Math.max(1, parseInt(req.query.limit, 10) || 30)
+      const page = Math.max(1, parseInt(req.query.page, 10) || 1)
+
+      const [documents, totalDocuments] = await Promise.all([
+        Document.find(filter)
+          .sort({ createdAt: -1 })
+          .select('-ocrTextHidden')
+          .skip((page - 1) * limit)
+          .limit(limit),
+        Document.countDocuments(filter),
+      ])
+
+      return res.json({
+        documents,
+        totalDocuments,
+        totalPages: Math.max(1, Math.ceil(totalDocuments / limit)),
+        currentPage: page,
+      })
+    }
+
+    const documents = await Document.find(filter)
       .sort({ createdAt: -1 })
       .select('-ocrTextHidden')
 
@@ -293,22 +320,25 @@ router.get('/workbooks', async (req, res) => {
 
 // GET /api/documents/workbook/download?year=YYYY - download a workbook file.
 // Defaults to the active workbook when no year is given (dashboard Export).
-// Every lookup is scoped to req.userId - workbooks are per-user, never shared.
+// The year/default lookups stay scoped to req.userId - workbooks are per-user,
+// never shared there. The workbookId lookup is the one deliberate exception:
+// it backs the Export History page, which by design shows and lets any user
+// download every user's workbooks - see that route below - so this branch
+// intentionally does NOT filter by req.userId, and resolves the physical file
+// using the workbook's own owner (wb.userId), not the requester.
 router.get('/workbook/download', async (req, res) => {
   try {
     const Workbook = require('../models/Workbook')
     let filename
+    let ownerUserId = req.userId
     if (req.query.workbookId) {
-      // Lets a specific archived record (as listed by GET /workbooks) be
-      // downloaded unambiguously - a year can now hold more than one
-      // Workbook record since a same-year "start new file" archives the old
-      // one instead of overwriting it.
       if (!isValidObjectId(req.query.workbookId)) {
         return res.status(400).json({ error: 'Invalid workbook id.' })
       }
-      const wb = await Workbook.findOne({ _id: req.query.workbookId, userId: req.userId })
+      const wb = await Workbook.findOne({ _id: req.query.workbookId })
       if (!wb) return res.status(404).json({ error: 'Workbook not found.' })
       filename = wb.filename
+      ownerUserId = wb.userId
     } else if (req.query.year) {
       // Prefer the currently active workbook for that year, else the most
       // recently archived one, so a plain year lookup stays deterministic.
@@ -323,7 +353,7 @@ router.get('/workbook/download', async (req, res) => {
       filename = settings.activeWorkbookName
     }
 
-    const target = excel.filePath(physicalWorkbookFilename(req.userId, filename))
+    const target = excel.filePath(physicalWorkbookFilename(ownerUserId, filename))
     if (!require('fs').existsSync(target)) {
       return res.status(404).json({ error: 'Workbook file not found on the server.' })
     }
@@ -331,6 +361,25 @@ router.get('/workbook/download', async (req, res) => {
   } catch (err) {
     console.error('Workbook download error:', err)
     res.status(500).json({ error: 'Failed to download the workbook.' })
+  }
+})
+
+// GET /api/documents/export-history - every export ever made, by any user,
+// newest first, with enough info to know which workbook file it went into.
+// Deliberate exception to this app's usual per-user isolation (Document,
+// Workbook, chat, etc. all stay scoped to req.userId as before) - this page
+// is intentionally a shared, all-users view, so it does NOT filter by userId.
+// Registered before /:id so "export-history" isn't read as an id.
+router.get('/export-history', async (req, res) => {
+  try {
+    const exports = await ExportedRow.find({})
+      .sort({ exportedAt: -1 })
+      .populate('workbookId', 'filename year')
+      .lean()
+    res.json({ exports })
+  } catch (err) {
+    console.error('Export history error:', err)
+    res.status(500).json({ error: 'Failed to load export history.' })
   }
 })
 
@@ -409,6 +458,7 @@ router.delete('/:id', async (req, res) => {
         console.warn(`Failed to delete GridFS file for document ${doc._id}: ${err.message}`)
       }
     }
+    await logAction(req.userId, 'document_deleted', { documentId: doc._id })
     res.json({ message: 'Document deleted successfully.' })
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete document.' })
@@ -580,8 +630,12 @@ router.post('/:id/save', async (req, res) => {
     const sheetMonth = excel.monthFromDate(doc.date)
     await excel.appendRow(physicalWorkbookFilename(req.userId, settings.activeWorkbookName), sheetMonth, row)
 
+    const workbookDoc = await Workbook.findOne({ userId: req.userId, filename: settings.activeWorkbookName, isActive: true })
+
     await ExportedRow.create({
       documentId: doc._id,
+      userId: req.userId,
+      workbookId: workbookDoc?._id || null,
       documentType: row.documentType,
       taxInvoiceNo: row.taxInvoiceNo,
       referenceNo: row.referenceNo,
@@ -589,6 +643,7 @@ router.post('/:id/save', async (req, res) => {
       date: row.date,
     })
 
+    await logAction(req.userId, 'document_exported', { documentId: doc._id, worksheet: sheetMonth, workbook: settings.activeWorkbookName })
     res.json({ message: 'Excel file appended successfully.', worksheet: sheetMonth, workbook: settings.activeWorkbookName })
   } catch (err) {
     console.error('Save error:', err)

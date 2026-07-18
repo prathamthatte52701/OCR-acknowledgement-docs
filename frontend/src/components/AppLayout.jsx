@@ -6,6 +6,7 @@ const navLinks = [
   { to: '/', label: 'Dashboard', exact: true },
   { to: '/upload', label: 'Upload' },
   { to: '/documents', label: 'My Documents' },
+  { to: '/export-history', label: 'Export History' },
 ]
 
 export default function AppLayout() {

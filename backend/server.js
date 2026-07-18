@@ -33,7 +33,9 @@ const helmet = require('helmet')
 const authRouter = require('./routes/auth')
 const documentsRouter = require('./routes/documents')
 const chatRouter = require('./routes/chat')
+const adminRouter = require('./routes/admin')
 const { requireAuth } = require('./middleware/auth')
+const { isAdmin } = require('./middleware/isAdmin')
 
 const app = express()
 const PORT = process.env.PORT || 5002
@@ -56,6 +58,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 app.use('/api/auth', authRouter)
 app.use('/api/documents', requireAuth, documentsRouter)
 app.use('/api/documents/:id/chat', requireAuth, chatRouter)
+app.use('/api/admin', requireAuth, isAdmin, adminRouter)
 
 // Health check
 app.get('/api/health', (req, res) => {

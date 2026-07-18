@@ -5,6 +5,11 @@ const mongoose = require('mongoose')
 // of the Excel file on disk.
 const exportedRowSchema = new mongoose.Schema({
   documentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Document', required: true, index: true },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  // Which workbook this export landed in, set at export time going forward.
+  // Nullable so historical rows created before this field existed don't need
+  // a backfill - they just show as "unknown workbook" in the history view.
+  workbookId: { type: mongoose.Schema.Types.ObjectId, ref: 'Workbook', default: null },
   documentType: { type: String, required: true },
   taxInvoiceNo: { type: String, default: null },
   referenceNo: { type: String, default: null },

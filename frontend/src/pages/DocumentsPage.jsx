@@ -42,17 +42,24 @@ function DocumentsError({ message, onRetry }) {
   )
 }
 
+const PAGE_SIZE = 30
+
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [page, setPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
+  const [totalDocuments, setTotalDocuments] = useState(0)
 
-  async function fetchDocuments() {
+  async function fetchDocuments(pageToLoad = page) {
     setLoading(true)
     setError('')
     try {
-      const res = await api.get('/documents')
+      const res = await api.get('/documents', { params: { page: pageToLoad, limit: PAGE_SIZE } })
       setDocuments(res.data?.documents || [])
+      setTotalPages(res.data?.totalPages || 1)
+      setTotalDocuments(res.data?.totalDocuments || 0)
     } catch (err) {
       setError(err.userMessage || 'Could not load your documents. Please try again.')
     } finally {
@@ -63,9 +70,12 @@ export default function DocumentsPage() {
   useEffect(() => {
     let cancelled = false
 
-    api.get('/documents')
+    api.get('/documents', { params: { page, limit: PAGE_SIZE } })
       .then(res => {
-        if (!cancelled) setDocuments(res.data?.documents || [])
+        if (cancelled) return
+        setDocuments(res.data?.documents || [])
+        setTotalPages(res.data?.totalPages || 1)
+        setTotalDocuments(res.data?.totalDocuments || 0)
       })
       .catch(err => {
         if (!cancelled) setError(err.userMessage || 'Could not load your documents. Please try again.')
@@ -75,7 +85,7 @@ export default function DocumentsPage() {
       })
 
     return () => { cancelled = true }
-  }, [])
+  }, [page])
 
   return (
     <div className="relative min-h-full overflow-hidden bg-[#020817]">
@@ -88,7 +98,7 @@ export default function DocumentsPage() {
             <h1 className="text-3xl font-black tracking-[-0.03em] text-white sm:text-4xl">My Documents</h1>
             <p className="mt-2 flex items-center gap-2 text-[14.7px] font-medium text-slate-500">
               <span className="h-2 w-2 rounded-full bg-blue-400 shadow-[0_0_16px_rgba(96,165,250,0.85)]" />
-              {loading ? 'Loading documents...' : `${documents.length} document${documents.length !== 1 ? 's' : ''}`}
+              {loading ? 'Loading documents...' : `${totalDocuments} document${totalDocuments !== 1 ? 's' : ''}`}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -124,9 +134,32 @@ export default function DocumentsPage() {
         {loading ? (
           <DocumentsSkeleton />
         ) : error ? (
-          <DocumentsError message={error} onRetry={fetchDocuments} />
+          <DocumentsError message={error} onRetry={() => fetchDocuments(page)} />
         ) : (
-          <DocumentList documents={documents} />
+          <>
+            <DocumentList documents={documents} />
+            {totalPages > 1 && (
+              <div className="mt-8 flex items-center justify-center gap-4">
+                <button
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/[0.045] px-5 py-3 text-[14.7px] font-bold text-slate-200 transition-colors hover:border-blue-300/30 hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10 disabled:hover:bg-white/[0.045]"
+                >
+                  Previous
+                </button>
+                <span className="text-[14.7px] font-bold text-slate-400">
+                  Page {page} of {totalPages}
+                </span>
+                <button
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/[0.045] px-5 py-3 text-[14.7px] font-bold text-slate-200 transition-colors hover:border-blue-300/30 hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10 disabled:hover:bg-white/[0.045]"
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </>
         )}
       </main>
     </div>

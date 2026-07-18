@@ -89,13 +89,16 @@ export async function saveDocument(docId) {
   }
 }
 
-// Download the current active Excel workbook (dashboard Export). Blob responses
-// hide JSON error bodies, so 400/404 bodies are re-parsed from blob text.
-export async function downloadWorkbook(year = null) {
+// Download an Excel workbook. With no args, downloads the current active
+// workbook (dashboard Export). Pass { workbookId } to download a specific
+// past workbook (Export History) or { year } for a given year's - the
+// backend route already supports both. Blob responses hide JSON error
+// bodies, so 400/404 bodies are re-parsed from blob text.
+export async function downloadWorkbook({ year, workbookId } = {}) {
   let res
   try {
     res = await api.get('/documents/workbook/download', {
-      params: year ? { year } : {},
+      params: workbookId ? { workbookId } : year ? { year } : {},
       responseType: 'blob',
     })
   } catch (err) {

@@ -6,6 +6,7 @@ const { rateLimit, ipKeyGenerator } = require('express-rate-limit')
 const User = require('../models/User')
 const { requireAuth } = require('../middleware/auth')
 const { normalizeEmail, normalizeUsername, validateUsername, validateEmail, validatePassword } = require('../utils/validators')
+const { logAction } = require('../services/auditLog')
 
 const TOKEN_TTL = '7d'
 const SALT_ROUNDS = 10
@@ -69,8 +70,11 @@ const forgotPasswordLimiter = rateLimit({
 // that didn't match.
 const GENERIC_FORGOT_PASSWORD_ERROR = 'Username and email do not match our records.'
 
-function signToken(userId, tokenVersion) {
-  return jwt.sign({ userId, tokenVersion }, process.env.JWT_SECRET, { expiresIn: TOKEN_TTL })
+// Includes role so the admin/ frontend can read it client-side too - the
+// real enforcement is always the server-side isAdmin middleware's DB lookup,
+// this is only for the UI to decide what to render/redirect.
+function signToken(user) {
+  return jwt.sign({ userId: user._id.toString(), tokenVersion: user.tokenVersion, role: user.role }, process.env.JWT_SECRET, { expiresIn: TOKEN_TTL })
 }
 
 // POST /api/auth/signup
@@ -114,6 +118,7 @@ router.post('/signup', signupLimiter, async (req, res) => {
       throw err
     }
 
+    await logAction(user._id, 'signup', { email: user.email })
     res.status(201).json({ message: 'Account created. Please log in.' })
   } catch (err) {
     console.error('Signup error:', err)
@@ -140,8 +145,9 @@ router.post('/login', loginIpLimiter, loginEmailLimiter, async (req, res) => {
     const match = await bcrypt.compare(password, user.passwordHash)
     if (!match) return res.status(401).json({ error: 'Invalid email or password.' })
 
-    const token = signToken(user._id.toString(), user.tokenVersion)
-    res.json({ token, user: { id: user._id, username: user.username, email: user.email } })
+    const token = signToken(user)
+    await logAction(user._id, 'login', { email: user.email })
+    res.json({ token, user: { id: user._id, username: user.username, email: user.email, role: user.role } })
   } catch (err) {
     console.error('Login error:', err)
     res.status(500).json({ error: 'We could not log you in right now. Please try again in a moment.' })
@@ -151,9 +157,9 @@ router.post('/login', loginIpLimiter, loginEmailLimiter, async (req, res) => {
 // GET /api/auth/me - lets the frontend verify a stored token on load without
 // having to decode the JWT itself.
 router.get('/me', requireAuth, async (req, res) => {
-  const user = await User.findById(req.userId).select('username email')
+  const user = await User.findById(req.userId).select('username email role')
   if (!user) return res.status(401).json({ error: 'Not authenticated.' })
-  res.json({ user: { id: user._id, username: user.username, email: user.email } })
+  res.json({ user: { id: user._id, username: user.username, email: user.email, role: user.role } })
 })
 
 // PATCH /api/auth/me - update the logged-in user's username/email. Same
@@ -182,7 +188,7 @@ router.patch('/me', requireAuth, async (req, res) => {
     }
 
     await user.save()
-    res.json({ user: { id: user._id, username: user.username, email: user.email } })
+    res.json({ user: { id: user._id, username: user.username, email: user.email, role: user.role } })
   } catch (err) {
     console.error('Profile update error:', err)
     res.status(500).json({ error: 'We could not update your profile right now. Please try again in a moment.' })
@@ -219,8 +225,9 @@ router.post('/change-password', requireAuth, async (req, res) => {
     // Re-issue a fresh token carrying the new tokenVersion so the tab that
     // just changed the password doesn't get logged out too - only every
     // OTHER previously-issued token is now invalid.
-    const token = signToken(user._id.toString(), user.tokenVersion)
-    res.json({ token, user: { id: user._id, username: user.username, email: user.email } })
+    const token = signToken(user)
+    await logAction(user._id, 'password_change', { method: 'change_password' })
+    res.json({ token, user: { id: user._id, username: user.username, email: user.email, role: user.role } })
   } catch (err) {
     console.error('Change password error:', err)
     res.status(500).json({ error: 'We could not change your password right now. Please try again in a moment.' })
@@ -270,6 +277,7 @@ router.post('/forgot-password/reset', forgotPasswordLimiter, async (req, res) =>
     user.tokenVersion += 1
     await user.save()
 
+    await logAction(user._id, 'password_change', { method: 'forgot_password' })
     res.json({ message: 'Password updated successfully.' })
   } catch (err) {
     console.error('Forgot-password reset error:', err)
