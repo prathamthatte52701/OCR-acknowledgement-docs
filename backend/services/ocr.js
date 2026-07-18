@@ -7,6 +7,12 @@ const { spawn } = require('child_process')
 const path = require('path')
 const os = require('os')
 const fs = require('fs')
+const { withTimeout } = require('../utils/withTimeout')
+
+// pdf-parse/pdfjs-dist run in-process (unlike Tesseract, which is isolated in
+// its own child process with a 180s timeout) - a malformed/hostile PDF can
+// otherwise hang these calls forever and freeze the whole server.
+const PDF_PARSE_TIMEOUT_MS = 60000
 
 async function extractParts(buffer, mimeType) {
   try {
@@ -78,7 +84,7 @@ async function extractHeaderFromPDF(buffer) {
     const parser = new PDFParse({ data: buffer })
     let text
     try {
-      const result = await parser.getText()
+      const result = await withTimeout(parser.getText(), PDF_PARSE_TIMEOUT_MS, 'PDF header text extraction')
       text = (result.pages || []).map(p => p.text).join('\n').trim()
     } finally {
       await parser.destroy()
@@ -109,10 +115,13 @@ async function reconstructHeaderRowsByPosition(buffer) {
       path.join(path.dirname(require.resolve('pdfjs-dist/package.json')), 'standard_fonts') + path.sep
     ).href
 
-    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer), standardFontDataUrl, disableWorker: true }).promise
+    const doc = await withTimeout(
+      pdfjsLib.getDocument({ data: new Uint8Array(buffer), standardFontDataUrl, disableWorker: true }).promise,
+      PDF_PARSE_TIMEOUT_MS, 'PDF header position reconstruction (load)'
+    )
     const page = await doc.getPage(1)
     const viewport = page.getViewport({ scale: 1 })
-    const content = await page.getTextContent()
+    const content = await withTimeout(page.getTextContent(), PDF_PARSE_TIMEOUT_MS, 'PDF header position reconstruction (text content)')
 
     const items = content.items
       .map(it => ({ str: it.str, x: it.transform[4], y: it.transform[5] }))
@@ -200,7 +209,7 @@ async function extractFromPDF(buffer) {
     const { PDFParse } = require('pdf-parse')
     const parser = new PDFParse({ data: buffer })
     try {
-      const result = await parser.getText()
+      const result = await withTimeout(parser.getText(), PDF_PARSE_TIMEOUT_MS, 'PDF text extraction')
       const text = (result.pages || []).map(p => p.text).join('\n').trim()
       if (text && text.length > 80) {
         console.log(`PDF text layer: ${text.length} chars, ${result.total} pages`)
@@ -259,9 +268,12 @@ async function reconstructTextByPosition(buffer) {
       path.join(path.dirname(require.resolve('pdfjs-dist/package.json')), 'standard_fonts') + path.sep
     ).href
 
-    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer), standardFontDataUrl, disableWorker: true }).promise
+    const doc = await withTimeout(
+      pdfjsLib.getDocument({ data: new Uint8Array(buffer), standardFontDataUrl, disableWorker: true }).promise,
+      PDF_PARSE_TIMEOUT_MS, 'PDF position reconstruction (load)'
+    )
     const page = await doc.getPage(1)
-    const content = await page.getTextContent()
+    const content = await withTimeout(page.getTextContent(), PDF_PARSE_TIMEOUT_MS, 'PDF position reconstruction (text content)')
 
     const items = content.items
       .map(it => ({ str: it.str, x: it.transform[4], y: it.transform[5] }))

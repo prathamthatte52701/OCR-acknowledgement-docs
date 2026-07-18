@@ -2,22 +2,49 @@ const express = require('express')
 const router = express.Router()
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
+const rateLimit = require('express-rate-limit')
 const User = require('../models/User')
 const { requireAuth } = require('../middleware/auth')
-const { normalizeEmail, validateUsername, validateEmail, validatePassword } = require('../utils/validators')
+const { normalizeEmail, normalizeUsername, validateUsername, validateEmail, validatePassword } = require('../utils/validators')
 
 const TOKEN_TTL = '7d'
 const SALT_ROUNDS = 10
+// Shared text for every non-field-specific signup failure (duplicate email,
+// race-condition duplicate) - must stay byte-identical across all of them so
+// none of them stands out as the "email already exists" case in particular.
+const GENERIC_SIGNUP_ERROR = 'Could not create your account. Please check your details and try again.'
 
-function signToken(userId) {
-  return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: TOKEN_TTL })
+// Per-IP throttling - login is brute-forceable and signup is spammable
+// without this. Keyed by IP (express-rate-limit's default), since neither
+// route has an authenticated user yet.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Please try again in a few minutes.' },
+})
+const signupLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many signup attempts. Please try again later.' },
+})
+
+function signToken(userId, tokenVersion) {
+  return jwt.sign({ userId, tokenVersion }, process.env.JWT_SECRET, { expiresIn: TOKEN_TTL })
 }
 
 // POST /api/auth/signup
-router.post('/signup', async (req, res) => {
+router.post('/signup', signupLimiter, async (req, res) => {
   try {
-    const { username, password } = req.body
+    const { password } = req.body
+    if (typeof req.body.email !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ error: 'Email and password are required.' })
+    }
     const email = normalizeEmail(req.body.email)
+    const username = normalizeUsername(req.body.username)
 
     const usernameErr = validateUsername(username)
     if (usernameErr) return res.status(400).json({ error: usernameErr })
@@ -28,21 +55,29 @@ router.post('/signup', async (req, res) => {
     const passwordErr = validatePassword(password)
     if (passwordErr) return res.status(400).json({ error: passwordErr })
 
-    // One account per email - checked explicitly (clearer error) in addition
-    // to the unique index (which is the actual race-safe guarantee).
-    const existing = await User.findOne({ email })
-    if (existing) return res.status(409).json({ error: 'An account with this email already exists.' })
-
+    // Hash before the uniqueness check so a taken-email response costs roughly
+    // the same as a successful signup - a response-time gap would otherwise
+    // let an attacker use signup as an email-existence oracle.
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS)
+
+    // One account per email - checked explicitly (clearer error) in addition
+    // to the unique index (which is the actual race-safe guarantee). Reported
+    // with the SAME 400 status/shape as every other signup failure above
+    // (not a distinct 409) and a message that doesn't confirm the email is
+    // taken - a status/message unique to this one condition would itself let
+    // an attacker enumerate which emails already have accounts.
+    const existing = await User.findOne({ email })
+    if (existing) return res.status(400).json({ error: GENERIC_SIGNUP_ERROR })
+
     let user
     try {
       user = await User.create({ username, email, passwordHash })
     } catch (err) {
-      if (err.code === 11000) return res.status(409).json({ error: 'An account with this email already exists.' })
+      if (err.code === 11000) return res.status(400).json({ error: GENERIC_SIGNUP_ERROR })
       throw err
     }
 
-    const token = signToken(user._id.toString())
+    const token = signToken(user._id.toString(), user.tokenVersion)
     res.status(201).json({ token, user: { id: user._id, username: user.username, email: user.email } })
   } catch (err) {
     console.error('Signup error:', err)
@@ -51,8 +86,14 @@ router.post('/signup', async (req, res) => {
 })
 
 // POST /api/auth/login
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   try {
+    // Must reject non-string email/password before they ever reach a Mongo
+    // query - otherwise a JSON body like {"email":{"$gt":""}} gets passed
+    // straight through as a Mongo operator instead of a literal match.
+    if (typeof req.body.email !== 'string' || typeof req.body.password !== 'string') {
+      return res.status(400).json({ error: 'Email and password are required.' })
+    }
     const email = normalizeEmail(req.body.email)
     const { password } = req.body
     if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' })
@@ -63,7 +104,7 @@ router.post('/login', async (req, res) => {
     const match = await bcrypt.compare(password, user.passwordHash)
     if (!match) return res.status(401).json({ error: 'Invalid email or password.' })
 
-    const token = signToken(user._id.toString())
+    const token = signToken(user._id.toString(), user.tokenVersion)
     res.json({ token, user: { id: user._id, username: user.username, email: user.email } })
   } catch (err) {
     console.error('Login error:', err)

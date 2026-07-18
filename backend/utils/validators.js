@@ -11,8 +11,13 @@ function normalizeEmail(email) {
   return typeof email === 'string' ? email.trim().toLowerCase() : email
 }
 
+function normalizeUsername(username) {
+  return typeof username === 'string' ? username.trim() : username
+}
+
 function validateUsername(username) {
-  if (typeof username !== 'string' || !USERNAME_RE.test(username)) {
+  const trimmed = normalizeUsername(username)
+  if (typeof trimmed !== 'string' || !trimmed || !USERNAME_RE.test(trimmed)) {
     return 'Username must be 3-8 characters.'
   }
   return null
@@ -32,4 +37,4 @@ function validatePassword(password) {
   return null
 }
 
-module.exports = { normalizeEmail, validateUsername, validateEmail, validatePassword, EMAIL_RE, USERNAME_RE, PASSWORD_RE }
+module.exports = { normalizeEmail, normalizeUsername, validateUsername, validateEmail, validatePassword, EMAIL_RE, USERNAME_RE, PASSWORD_RE }

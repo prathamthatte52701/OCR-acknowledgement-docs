@@ -1,6 +1,7 @@
 const mongoose = require('mongoose')
 
 const documentSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   autoName: { type: String, required: true },
   originalFilename: { type: String, required: true },
   mimeType: { type: String, required: true },

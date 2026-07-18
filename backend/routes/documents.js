@@ -5,17 +5,33 @@ const path = require('path')
 
 // -- Processing queue - max 1 OCR job at a time to prevent OOM crashes ---------
 let _processing = false
-const _queue = []
-function enqueue(fn) {
+const _queue = [] // { fn, userId, resolve, reject }
+function enqueue(fn, userId) {
   return new Promise((resolve, reject) => {
-    _queue.push({ fn, resolve, reject })
+    _queue.push({ fn, userId, resolve, reject })
     drainQueue()
   })
 }
+
+// Round-robin fairness: run the earliest-queued job from a DIFFERENT user
+// than whoever ran last, if one is waiting - so one user's batch of uploads
+// can't starve everyone else behind strict FIFO. Falls back to plain FIFO
+// (front of queue) when everything queued belongs to the same user.
+let _lastUserId
+function pickNextJobIndex() {
+  if (_lastUserId !== undefined) {
+    const idx = _queue.findIndex(j => j.userId !== _lastUserId)
+    if (idx !== -1) return idx
+  }
+  return 0
+}
+
 async function drainQueue() {
   if (_processing || _queue.length === 0) return
   _processing = true
-  const { fn, resolve, reject } = _queue.shift()
+  const idx = pickNextJobIndex()
+  const [{ fn, userId, resolve, reject }] = _queue.splice(idx, 1)
+  _lastUserId = userId
   try { resolve(await fn()) } catch (e) { reject(e) }
   finally { _processing = false; drainQueue() }
 }
@@ -29,6 +45,10 @@ const { uploadBuffer, downloadBuffer, deleteFile } = require('../services/gridfs
 const { extractHeaderText } = require('../services/ocr')
 const { extractHeader } = require('../services/groq')
 const excel = require('../services/excel')
+const { withTimeout } = require('../utils/withTimeout')
+const { isValidObjectId } = require('../utils/objectId')
+
+const PDF_PARSE_TIMEOUT_MS = 60000
 
 const DOCUMENT_TYPES = ['Tax Invoice', 'Delivery Challan']
 
@@ -84,7 +104,7 @@ async function getPDFPageCount(buffer) {
     const { PDFParse } = require('pdf-parse')
     const parser = new PDFParse({ data: buffer })
     try {
-      const info = await parser.getInfo() // metadata only, no text/page extraction
+      const info = await withTimeout(parser.getInfo(), PDF_PARSE_TIMEOUT_MS, 'PDF page count')
       return info.total || 1
     } finally {
       await parser.destroy()
@@ -98,6 +118,15 @@ async function getPDFPageCount(buffer) {
 function updateActiveDocument(docId, update) {
   return Document.updateOne({ _id: docId, isDeleted: { $ne: true } }, update)
 }
+
+// A malformed :id (e.g. "abc123") would otherwise reach Mongoose and throw an
+// uncaught CastError, surfacing as a raw 500 instead of a clean 400. Runs
+// once, before every route below that takes an :id param, so none of them
+// need this check repeated inline.
+router.param('id', (req, res, next, id) => {
+  if (!isValidObjectId(id)) return res.status(400).json({ error: 'Invalid document id.' })
+  next()
+})
 
 // POST /api/documents/upload
 router.post('/upload', uploadMiddleware, async (req, res) => {
@@ -131,6 +160,7 @@ router.post('/upload', uploadMiddleware, async (req, res) => {
     const gridFsFileId = await uploadBuffer(buffer, originalname, mimetype)
 
     const doc = await Document.create({
+      userId: req.userId,
       autoName,
       originalFilename: originalname,
       mimeType: mimetype,
@@ -140,8 +170,10 @@ router.post('/upload', uploadMiddleware, async (req, res) => {
       uploadStatus: 'uploaded',
     })
 
-    // Queue processing - only 1 OCR job runs at a time to prevent OOM
-    enqueue(() => processDocument(doc._id, buffer, mimetype, documentType)).catch(err => {
+    // Queue processing - only 1 OCR job runs at a time to prevent OOM.
+    // Tagged with the uploader's userId so the queue can round-robin fairly
+    // across users instead of one user's batch blocking everyone else.
+    enqueue(() => processDocument(doc._id, buffer, mimetype, documentType), req.userId).catch(err => {
       console.error('Background processing error:', err.message)
     })
 
@@ -197,7 +229,7 @@ async function processDocument(docId, buffer, mimeType, documentType) {
 
 async function recoverInterruptedUploads() {
   const docs = await Document.find({ uploadStatus: 'uploaded', isDeleted: { $ne: true } })
-    .select('_id mimeType gridFsFileId documentType')
+    .select('_id userId mimeType gridFsFileId documentType')
 
   docs.forEach((doc) => {
     enqueue(async () => {
@@ -219,7 +251,7 @@ async function recoverInterruptedUploads() {
           processingError: 'Processing was interrupted and could not be recovered. Please reprocess this document.',
         })
       }
-    }).catch(err => console.error('Recovery queue error:', err.message))
+    }, doc.userId).catch(err => console.error('Recovery queue error:', err.message))
   })
 
   return docs.length
@@ -228,7 +260,7 @@ async function recoverInterruptedUploads() {
 // GET /api/documents
 router.get('/', async (req, res) => {
   try {
-    const documents = await Document.find({ isDeleted: { $ne: true } })
+    const documents = await Document.find({ userId: req.userId, isDeleted: { $ne: true } })
       .sort({ createdAt: -1 })
       .select('-ocrTextHidden')
     res.json({ documents })
@@ -238,13 +270,13 @@ router.get('/', async (req, res) => {
   }
 })
 
-// GET /api/documents/workbooks - list every workbook (active + archived),
+// GET /api/documents/workbooks - list this user's workbooks (active + archived),
 // newest year first. Registered before /:id so "workbooks" isn't read as an id.
 router.get('/workbooks', async (req, res) => {
   try {
     const Workbook = require('../models/Workbook')
-    const workbooks = await Workbook.find({}).sort({ year: -1 }).lean()
-    const settings = await Settings.findOne({ key: 'excelState' })
+    const workbooks = await Workbook.find({ userId: req.userId }).sort({ year: -1 }).lean()
+    const settings = await getSettings(req.userId)
     res.json({ workbooks, active: settings?.activeWorkbookName || null, activeYear: settings?.activeYear || null })
   } catch (err) {
     res.status(500).json({ error: 'Failed to list workbooks.' })
@@ -253,27 +285,41 @@ router.get('/workbooks', async (req, res) => {
 
 // GET /api/documents/workbook/download?year=YYYY - download a workbook file.
 // Defaults to the active workbook when no year is given (dashboard Export).
+// Every lookup is scoped to req.userId - workbooks are per-user, never shared.
 router.get('/workbook/download', async (req, res) => {
   try {
     const Workbook = require('../models/Workbook')
     let filename
-    if (req.query.year) {
-      const wb = await Workbook.findOne({ year: Number(req.query.year) })
+    if (req.query.workbookId) {
+      // Lets a specific archived record (as listed by GET /workbooks) be
+      // downloaded unambiguously - a year can now hold more than one
+      // Workbook record since a same-year "start new file" archives the old
+      // one instead of overwriting it.
+      if (!isValidObjectId(req.query.workbookId)) {
+        return res.status(400).json({ error: 'Invalid workbook id.' })
+      }
+      const wb = await Workbook.findOne({ _id: req.query.workbookId, userId: req.userId })
+      if (!wb) return res.status(404).json({ error: 'Workbook not found.' })
+      filename = wb.filename
+    } else if (req.query.year) {
+      // Prefer the currently active workbook for that year, else the most
+      // recently archived one, so a plain year lookup stays deterministic.
+      const wb = await Workbook.findOne({ year: Number(req.query.year), userId: req.userId }).sort({ isActive: -1, createdAt: -1 })
       if (!wb) return res.status(404).json({ error: 'No workbook for that year.' })
       filename = wb.filename
     } else {
-      const settings = await Settings.findOne({ key: 'excelState' })
+      const settings = await getSettings(req.userId)
       if (!settings || !settings.activeWorkbookName) {
         return res.status(400).json({ error: 'NO_ACTIVE_WORKBOOK', message: 'No active Excel workbook yet. Save a document first.' })
       }
       filename = settings.activeWorkbookName
     }
 
-    const target = excel.filePath(filename)
+    const target = excel.filePath(physicalWorkbookFilename(req.userId, filename))
     if (!require('fs').existsSync(target)) {
       return res.status(404).json({ error: 'Workbook file not found on the server.' })
     }
-    res.download(target)
+    res.download(target, filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`)
   } catch (err) {
     console.error('Workbook download error:', err)
     res.status(500).json({ error: 'Failed to download the workbook.' })
@@ -283,7 +329,7 @@ router.get('/workbook/download', async (req, res) => {
 // GET /api/documents/:id
 router.get('/:id', async (req, res) => {
   try {
-    const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
+    const doc = await Document.findOne({ _id: req.params.id, userId: req.userId, isDeleted: { $ne: true } })
       .select('-ocrTextHidden')
     if (!doc) return res.status(404).json({ error: 'Document not found.' })
     res.json({ document: doc })
@@ -295,7 +341,7 @@ router.get('/:id', async (req, res) => {
 // GET /api/documents/:id/download
 router.get('/:id/download', async (req, res) => {
   try {
-    const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
+    const doc = await Document.findOne({ _id: req.params.id, userId: req.userId, isDeleted: { $ne: true } })
     if (!doc) return res.status(404).json({ error: 'Document not found.' })
 
     const buffer = await downloadBuffer(doc.gridFsFileId)
@@ -311,7 +357,7 @@ router.get('/:id/download', async (req, res) => {
 // POST /api/documents/:id/reprocess
 router.post('/:id/reprocess', async (req, res) => {
   try {
-    const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
+    const doc = await Document.findOne({ _id: req.params.id, userId: req.userId, isDeleted: { $ne: true } })
     if (!doc) return res.status(404).json({ error: 'Document not found.' })
 
     const buffer = await downloadBuffer(doc.gridFsFileId)
@@ -327,7 +373,7 @@ router.post('/:id/reprocess', async (req, res) => {
     })
 
     // Queue reprocessing - only 1 OCR job runs at a time to prevent OOM
-    enqueue(() => processDocument(doc._id, buffer, doc.mimeType, doc.documentType))
+    enqueue(() => processDocument(doc._id, buffer, doc.mimeType, doc.documentType), req.userId)
       .then(() => updateActiveDocument(doc._id, { reprocessedAt: new Date() }))
       .catch(err => console.error('Reprocess background error:', err.message))
 
@@ -341,7 +387,7 @@ router.post('/:id/reprocess', async (req, res) => {
 // DELETE /api/documents/:id
 router.delete('/:id', async (req, res) => {
   try {
-    const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
+    const doc = await Document.findOne({ _id: req.params.id, userId: req.userId, isDeleted: { $ne: true } })
     if (!doc) return res.status(404).json({ error: 'Document not found.' })
 
     await Document.findByIdAndUpdate(doc._id, {
@@ -364,6 +410,10 @@ router.delete('/:id', async (req, res) => {
 // PATCH /api/documents/:id/correct - editable fields are documentType-conditional:
 // Tax Invoice -> taxInvoiceNo | referenceNo | date. Delivery Challan -> number | date.
 const EDITABLE_FIELDS = ['taxInvoiceNo', 'referenceNo', 'number', 'date']
+const FIELDS_BY_DOCUMENT_TYPE = {
+  'Tax Invoice': ['taxInvoiceNo', 'referenceNo', 'date'],
+  'Delivery Challan': ['number', 'date'],
+}
 router.patch('/:id/correct', async (req, res) => {
   try {
     const { field, value } = req.body
@@ -374,8 +424,20 @@ router.patch('/:id/correct', async (req, res) => {
       return res.status(400).json({ error: 'New value is required.' })
     }
 
-    const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
+    const doc = await Document.findOne({ _id: req.params.id, userId: req.userId, isDeleted: { $ne: true } })
     if (!doc) return res.status(404).json({ error: 'Document not found.' })
+
+    // A document still mid-OCR can have its uploadStatus flip to 'processed'
+    // right after this handler reads it and silently overwrite a correction
+    // made in that window - block corrections until processing has actually
+    // finished, so there's no race between a manual edit and the OCR result.
+    if (doc.uploadStatus !== 'processed' && doc.uploadStatus !== 'failed') {
+      return res.status(409).json({ error: 'This document is still processing. Try again once it completes.' })
+    }
+
+    if (!FIELDS_BY_DOCUMENT_TYPE[doc.documentType].includes(field)) {
+      return res.status(400).json({ error: `field "${field}" does not apply to ${doc.documentType} documents.` })
+    }
 
     if (field === 'date') {
       const { normalizeDateToDDMMYYYY } = require('../services/groq')
@@ -406,14 +468,28 @@ router.patch('/:id/correct', async (req, res) => {
   }
 })
 
-function getSettings() {
-  return Settings.findOne({ key: 'excelState' })
+// Workbooks/Settings are per-user, but excel.js resolves a filename straight
+// to a shared backend/exports/ directory - two users picking the same
+// display name would otherwise read/write the SAME physical .xlsx file even
+// though their Workbook/Settings records are isolated. Namespacing the
+// on-disk filename with the owning userId keeps the files themselves
+// isolated too, without changing services/excel.js at all (it just gets
+// handed a different string).
+function physicalWorkbookFilename(userId, filename) {
+  return `${userId}_${filename}`
 }
 
-// POST /api/documents/new-excel-file - creates (or replaces) the active yearly
-// workbook. Body: { filename }. Used for the first-ever workbook and when the
-// year rolls over (a new workbook per year). The previous active workbook, if
-// any, is archived (kept on disk, marked isActive:false) - never overwritten.
+function getSettings(userId) {
+  return Settings.findOne({ userId, key: 'excelState' })
+}
+
+// POST /api/documents/new-excel-file - creates a new active yearly workbook
+// for the AUTHENTICATED USER. Body: { filename }. Used for the first-ever
+// workbook, when the year rolls over, and when the user manually starts a
+// new file mid-year. Whatever workbook this user had previously active -
+// same year or not - is archived (kept on disk, marked isActive:false/
+// archivedAt set, same as year rollover) rather than overwritten, so it
+// stays listed/downloadable. Never touches other users' workbooks.
 router.post('/new-excel-file', async (req, res) => {
   try {
     const { filename } = req.body
@@ -423,21 +499,19 @@ router.post('/new-excel-file', async (req, res) => {
     const trimmed = filename.trim()
     const { year, month } = excel.currentPeriod()
 
-    // Archive the currently active workbook of a DIFFERENT year (year rollover).
-    // Same-year "start new file" just replaces the pointer.
+    // Archive whatever workbook THIS USER currently has active, regardless
+    // of year - this covers both year rollover AND a same-year "start new
+    // file" click, which previously just silently overwrote the same-year
+    // record.
     await Workbook.updateMany(
-      { isActive: true, year: { $ne: year } },
+      { userId: req.userId, isActive: true },
       { $set: { isActive: false, archivedAt: new Date() } }
     )
 
-    await excel.createWorkbook(trimmed, month)
-    await Workbook.findOneAndUpdate(
-      { year },
-      { $set: { filename: trimmed, isActive: true, archivedAt: null } },
-      { upsert: true }
-    )
+    await excel.createWorkbook(physicalWorkbookFilename(req.userId, trimmed), month)
+    await Workbook.create({ userId: req.userId, year, filename: trimmed, isActive: true, archivedAt: null })
     await Settings.findOneAndUpdate(
-      { key: 'excelState' },
+      { userId: req.userId, key: 'excelState' },
       { $set: { activeWorkbookName: trimmed, activeYear: year } },
       { upsert: true }
     )
@@ -454,14 +528,14 @@ router.post('/new-excel-file', async (req, res) => {
 // and signals year rollover so the frontend can prompt for a new workbook name.
 router.post('/:id/save', async (req, res) => {
   try {
-    const doc = await Document.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
+    const doc = await Document.findOne({ _id: req.params.id, userId: req.userId, isDeleted: { $ne: true } })
     if (!doc) return res.status(404).json({ error: 'Document not found.' })
     if (doc.uploadStatus !== 'processed') {
       return res.status(400).json({ error: 'Document has not been processed yet.' })
     }
 
     const { year } = excel.currentPeriod()
-    const settings = await getSettings()
+    const settings = await getSettings(req.userId)
 
     if (!settings || !settings.activeWorkbookName) {
       return res.status(400).json({ error: 'NO_ACTIVE_WORKBOOK', message: 'No active Excel workbook. Start one first.' })
@@ -472,7 +546,7 @@ router.post('/:id/save', async (req, res) => {
     // this save). Previous year's file stays on disk, untouched.
     if (settings.activeYear !== year) {
       await Workbook.updateMany(
-        { isActive: true, year: settings.activeYear },
+        { userId: req.userId, isActive: true, year: settings.activeYear },
         { $set: { isActive: false, archivedAt: new Date() } }
       )
       return res.status(409).json({
@@ -494,7 +568,7 @@ router.post('/:id/save', async (req, res) => {
     // Worksheet = the document's OWN date, not today's date - a document dated
     // 30/06 always lands in the June sheet even if saved in July.
     const sheetMonth = excel.monthFromDate(doc.date)
-    await excel.appendRow(settings.activeWorkbookName, sheetMonth, row)
+    await excel.appendRow(physicalWorkbookFilename(req.userId, settings.activeWorkbookName), sheetMonth, row)
 
     await ExportedRow.create({
       documentId: doc._id,
@@ -518,5 +592,6 @@ router.post('/:id/save', async (req, res) => {
 })
 
 router.recoverInterruptedUploads = recoverInterruptedUploads
+router.enqueue = enqueue
 
 module.exports = router

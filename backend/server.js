@@ -29,6 +29,7 @@ if (!process.env.JWT_SECRET) {
   process.exit(1)
 }
 
+const helmet = require('helmet')
 const authRouter = require('./routes/auth')
 const documentsRouter = require('./routes/documents')
 const chatRouter = require('./routes/chat')
@@ -38,6 +39,11 @@ const app = express()
 const PORT = process.env.PORT || 5002
 
 // Middleware
+// crossOriginResourcePolicy is relaxed because the dev frontend (5174) fetches
+// JSON/blob responses from this API (5002) cross-origin - the app's own cors()
+// below already governs which origins may do that; helmet's default
+// same-origin CORP would otherwise block those already-permitted requests.
+app.use(helmet({ crossOriginResourcePolicy: false }))
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' ? false : 'http://localhost:5174',
   credentials: true,
