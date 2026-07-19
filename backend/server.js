@@ -82,12 +82,26 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error.' })
 })
 
-// Connect MongoDB then start server
-mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/docintel', {
-  serverSelectionTimeoutMS: 10000,
-  family: 4,
-})
-  .then(async () => {
+// Connect MongoDB then start server. Atlas connections occasionally ECONNRESET
+// on the very first handshake (a transient network blip, not a real outage) -
+// retrying a few times with backoff before giving up turns "the server is
+// randomly dead until someone notices and restarts it" into "it connects a few
+// seconds late," which is what was actually causing intermittent login/upload
+// failures (the process was exiting on the first hiccup instead of retrying).
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/docintel'
+const MONGO_CONNECT_RETRIES = 5
+const MONGO_CONNECT_RETRY_DELAY_MS = 3000
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function connectWithRetry(attempt = 1) {
+  try {
+    await mongoose.connect(MONGO_URI, {
+      serverSelectionTimeoutMS: 10000,
+      family: 4,
+    })
     console.log('OK MongoDB connected successfully')
     const recoveredCount = await documentsRouter.recoverInterruptedUploads()
     if (recoveredCount > 0) {
@@ -96,14 +110,24 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/docintel', 
     app.listen(PORT, () => {
       console.log(`AckIntel AI - Acknowledgement Intelligence Server running on port ${PORT}`)
     })
-  })
-  .catch((err) => {
-    console.error('ERROR MongoDB connection FAILED')
+  } catch (err) {
+    console.error(`ERROR MongoDB connection FAILED (attempt ${attempt}/${MONGO_CONNECT_RETRIES})`)
     console.error(`   Reason : ${err.message}`)
     console.error(`   Code   : ${err.code || 'N/A'}`)
-    console.error(`   URI    : ${(process.env.MONGO_URI || 'mongodb://localhost:27017/docintel').replace(/:([^@]+)@/, ':***@')}`)
-    process.exit(1)
-  })
+    console.error(`   URI    : ${MONGO_URI.replace(/:([^@]+)@/, ':***@')}`)
+
+    if (attempt >= MONGO_CONNECT_RETRIES) {
+      console.error(`Giving up after ${MONGO_CONNECT_RETRIES} attempts.`)
+      process.exit(1)
+    }
+
+    console.warn(`Retrying in ${MONGO_CONNECT_RETRY_DELAY_MS / 1000}s...`)
+    await delay(MONGO_CONNECT_RETRY_DELAY_MS)
+    return connectWithRetry(attempt + 1)
+  }
+}
+
+connectWithRetry()
 
 // Log live connection events after initial connect
 mongoose.connection.on('disconnected', (err) => {
