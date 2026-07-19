@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import api from '../utils/api'
-import UploadCard from '../components/UploadCard'
+import UploadCard, { validateDocumentFile } from '../components/UploadCard'
 import challanRouteVisual from '../assets/transport-bill-route-visual.png'
 
 const DOCUMENT_TYPES = ['Tax Invoice', 'Delivery Challan']
+const MAX_BULK_FILES = 5
 
 function LogisticsUploadIllustration() {
   return (
@@ -66,6 +67,21 @@ function UploadProcessingState({ message }) {
   )
 }
 
+function StatusChip({ status }) {
+  const styles = {
+    waiting: 'border-slate-500/30 bg-slate-500/10 text-slate-400',
+    processing: 'border-blue-300/30 bg-blue-500/10 text-blue-200',
+    done: 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200',
+    failed: 'border-rose-400/30 bg-rose-500/10 text-rose-200',
+  }
+  const labels = { waiting: 'Waiting', processing: 'Processing', done: 'Done', failed: 'Failed' }
+  return (
+    <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11.6px] font-bold uppercase tracking-[0.1em] ${styles[status]}`}>
+      {labels[status]}
+    </span>
+  )
+}
+
 export default function UploadPage() {
   const [file, setFile] = useState(null)
   const [documentType, setDocumentType] = useState(DOCUMENT_TYPES[0])
@@ -74,9 +90,23 @@ export default function UploadPage() {
   const pollRef = useRef(null)
   const navigate = useNavigate()
 
+  // Bulk upload - a separate, additive flow alongside the single-file one
+  // above. Nothing in this block changes single-file state/handlers.
+  const [mode, setMode] = useState('single') // 'single' | 'bulk'
+  const [bulkFiles, setBulkFiles] = useState([]) // [{ file, documentType, status, error, docId }]
+  const [bulkError, setBulkError] = useState('')
+  const [bulkSubmitting, setBulkSubmitting] = useState(false)
+  const bulkPollRef = useRef(null)
+  // setInterval's closure would otherwise see bulkFiles as it was when the
+  // interval was created - this ref is kept in sync so each tick reads the
+  // current list instead of a stale one.
+  const bulkFilesRef = useRef([])
+  useEffect(() => { bulkFilesRef.current = bulkFiles }, [bulkFiles])
+
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
+      if (bulkPollRef.current) clearInterval(bulkPollRef.current)
     }
   }, [])
 
@@ -152,6 +182,130 @@ export default function UploadPage() {
 
   const isProcessing = status === 'uploading' || status === 'processing'
 
+  // -- Bulk upload -----------------------------------------------------------
+
+  function handleBulkFileSelect(e) {
+    const selected = Array.from(e.target.files || [])
+    e.target.value = ''
+    if (selected.length === 0) return
+
+    if (bulkFiles.length + selected.length > MAX_BULK_FILES) {
+      setBulkError(`You can upload a maximum of ${MAX_BULK_FILES} files at once.`)
+      return
+    }
+
+    const additions = []
+    for (const f of selected) {
+      const err = validateDocumentFile(f)
+      if (err) {
+        setBulkError(`${f.name}: ${err}`)
+        return
+      }
+      additions.push({ file: f, documentType: DOCUMENT_TYPES[0], status: 'waiting', error: '', docId: null })
+    }
+    setBulkError('')
+    setBulkFiles((prev) => [...prev, ...additions])
+  }
+
+  function removeBulkFile(index) {
+    setBulkFiles((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  function setBulkFileType(index, type) {
+    setBulkFiles((prev) => prev.map((f, i) => (i === index ? { ...f, documentType: type } : f)))
+  }
+
+  function startBulkPolling() {
+    if (bulkPollRef.current) clearInterval(bulkPollRef.current)
+    let attempts = 0
+
+    bulkPollRef.current = setInterval(async () => {
+      attempts++
+      const current = bulkFilesRef.current
+      const pending = current.filter((f) => f.status === 'processing' && f.docId)
+
+      if (pending.length === 0) {
+        clearInterval(bulkPollRef.current)
+        bulkPollRef.current = null
+        setBulkSubmitting(false)
+        return
+      }
+
+      // Polling is just a status read per file, not processing - running
+      // these checks together doesn't run OCR concurrently, the server's
+      // own single-slot queue already guarantees only one file is actually
+      // being worked on at any moment.
+      const updates = await Promise.all(pending.map(async (f) => {
+        try {
+          const res = await api.get(`/documents/${f.docId}`)
+          const doc = res.data?.document
+          if (doc?.uploadStatus === 'processed') return { docId: f.docId, status: 'done' }
+          if (doc?.uploadStatus === 'failed') return { docId: f.docId, status: 'failed', error: doc.processingError || 'Processing failed.' }
+          if (attempts > 90) return { docId: f.docId, status: 'failed', error: 'This is taking longer than expected. Check My Documents shortly.' }
+          return null
+        } catch {
+          if (attempts > 90) return { docId: f.docId, status: 'failed', error: 'Could not check status. Check My Documents shortly.' }
+          return null
+        }
+      }))
+
+      const changed = updates.filter(Boolean)
+      if (changed.length > 0) {
+        setBulkFiles((prev) => prev.map((f) => {
+          const u = changed.find((c) => c.docId === f.docId)
+          return u ? { ...f, status: u.status, error: u.error || '' } : f
+        }))
+      }
+    }, 2000)
+  }
+
+  async function handleBulkUpload() {
+    if (bulkFiles.length === 0) return
+    setBulkSubmitting(true)
+    setBulkError('')
+    setBulkFiles((prev) => prev.map((f) => ({ ...f, status: 'processing' })))
+
+    try {
+      const formData = new FormData()
+      bulkFiles.forEach((f) => {
+        formData.append('documents', f.file)
+        formData.append('documentTypes', f.documentType)
+      })
+
+      const res = await api.post('/documents/bulk-upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      const results = res.data?.results || []
+
+      setBulkFiles((prev) => prev.map((f, i) => {
+        const r = results[i]
+        if (!r) return { ...f, status: 'failed', error: 'No result returned for this file.' }
+        if (r.error) return { ...f, status: 'failed', error: r.error }
+        return { ...f, status: 'processing', docId: r.document._id }
+      }))
+      startBulkPolling()
+    } catch (err) {
+      setBulkSubmitting(false)
+      const message = err.userMessage || 'Upload failed. Please try again.'
+      setBulkFiles((prev) => prev.map((f) => ({ ...f, status: 'failed', error: message })))
+    }
+  }
+
+  function handleBulkReset() {
+    if (bulkPollRef.current) {
+      clearInterval(bulkPollRef.current)
+      bulkPollRef.current = null
+    }
+    setBulkFiles([])
+    setBulkError('')
+    setBulkSubmitting(false)
+  }
+
+  const bulkDoneCount = bulkFiles.filter((f) => f.status === 'done').length
+  const bulkFailedCount = bulkFiles.filter((f) => f.status === 'failed').length
+  const bulkTotal = bulkFiles.length
+  const bulkAllSettled = bulkTotal > 0 && bulkDoneCount + bulkFailedCount === bulkTotal
+
   return (
     <div className="relative min-h-full overflow-hidden bg-[#020817]">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_8%_14%,rgba(37,99,235,0.2),transparent_30%),radial-gradient(circle_at_78%_18%,rgba(6,182,212,0.16),transparent_28%),linear-gradient(180deg,rgba(15,23,42,0.16),rgba(2,6,23,0.98))]" />
@@ -172,7 +326,140 @@ export default function UploadPage() {
         </section>
 
         <section className="rounded-[32px] border border-blue-300/18 bg-slate-900/62 p-5 shadow-[0_34px_120px_rgba(2,8,23,0.55),inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-xl sm:p-7">
-          {isProcessing ? (
+          <div className="mb-5 flex gap-2">
+            <button
+              type="button"
+              onClick={() => setMode('single')}
+              disabled={isProcessing || bulkSubmitting}
+              className={`flex-1 rounded-2xl border px-4 py-2.5 text-[13.6px] font-bold transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+                mode === 'single'
+                  ? 'border-blue-300/50 bg-blue-500/15 text-blue-100'
+                  : 'border-white/10 bg-white/[0.03] text-slate-400 hover:border-blue-300/25 hover:text-slate-200'
+              }`}
+            >
+              Single Upload
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('bulk')}
+              disabled={isProcessing || bulkSubmitting}
+              className={`flex-1 rounded-2xl border px-4 py-2.5 text-[13.6px] font-bold transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+                mode === 'bulk'
+                  ? 'border-blue-300/50 bg-blue-500/15 text-blue-100'
+                  : 'border-white/10 bg-white/[0.03] text-slate-400 hover:border-blue-300/25 hover:text-slate-200'
+              }`}
+            >
+              Bulk Upload (up to {MAX_BULK_FILES})
+            </button>
+          </div>
+
+          {mode === 'bulk' ? (
+            bulkAllSettled ? (
+              <div className="flex min-h-[460px] flex-col items-center justify-center gap-5 rounded-[26px] border border-blue-300/12 bg-slate-950/34 px-5 py-14 text-center">
+                <div
+                  className={`grid h-20 w-20 place-items-center rounded-full border text-[13.6px] font-black shadow-[0_0_45px_rgba(16,185,129,0.18)] ${
+                    bulkFailedCount === 0
+                      ? 'border-emerald-300/25 bg-emerald-400/15 text-emerald-200'
+                      : 'border-amber-300/25 bg-amber-400/15 text-amber-200'
+                  }`}
+                >
+                  {bulkDoneCount}/{bulkTotal}
+                </div>
+                <p className="text-xl font-black text-white">
+                  {bulkFailedCount === 0
+                    ? `${bulkDoneCount}/${bulkTotal} processed successfully`
+                    : `${bulkDoneCount}/${bulkTotal} processed, ${bulkFailedCount} failed - see below`}
+                </p>
+                <div className="w-full space-y-2 text-left">
+                  {bulkFiles.map((f, i) => (
+                    <div key={i} className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5">
+                      <span className="min-w-0 truncate text-[13.6px] text-slate-300">{f.file.name}</span>
+                      {f.status === 'done' && f.docId ? (
+                        <Link to={`/documents/${f.docId}`} className="shrink-0 text-[12.6px] font-bold text-emerald-300 no-underline hover:underline">
+                          Review
+                        </Link>
+                      ) : (
+                        <span className="shrink-0 text-[12.6px] font-bold text-rose-300" title={f.error}>Failed</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <button
+                  onClick={handleBulkReset}
+                  className="rounded-2xl border border-white/10 bg-white/[0.045] px-6 py-3 text-[14.7px] font-bold text-slate-200 transition-all hover:border-blue-300/30 hover:bg-blue-500/10"
+                >
+                  Start New Batch
+                </button>
+              </div>
+            ) : bulkSubmitting ? (
+              <div className="space-y-3">
+                <p className="text-center text-[14.7px] font-bold text-slate-300">
+                  Processing {bulkDoneCount + bulkFailedCount}/{bulkTotal}...
+                </p>
+                {bulkFiles.map((f, i) => (
+                  <div key={i} className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                    <span className="min-w-0 truncate text-[13.6px] text-slate-300">
+                      {f.file.name} <span className="text-slate-600">- {f.documentType}</span>
+                    </span>
+                    <StatusChip status={f.status} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-5">
+                {bulkError && (
+                  <div className="flex items-start gap-3 rounded-2xl border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-[14.7px] text-rose-200">
+                    <svg className="mt-0.5 h-4 w-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    <span>{bulkError}</span>
+                  </div>
+                )}
+
+                <label className="block cursor-pointer rounded-[26px] border border-dashed border-slate-500/60 bg-slate-950/30 p-8 text-center transition-all hover:border-blue-300/75 hover:bg-blue-500/[0.045]">
+                  <input type="file" accept=".jpg,.jpeg,.png,.pdf" multiple className="hidden" onChange={handleBulkFileSelect} />
+                  <p className="text-[14.7px] font-bold text-white">Click to select up to {MAX_BULK_FILES} files</p>
+                  <p className="mt-1 text-[12.6px] text-slate-500">JPG, JPEG, PNG, PDF - max 5MB each</p>
+                </label>
+
+                {bulkFiles.length > 0 && (
+                  <div className="space-y-2">
+                    {bulkFiles.map((f, i) => (
+                      <div key={i} className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                        <span className="min-w-0 flex-1 truncate text-[13.6px] text-slate-300">{f.file.name}</span>
+                        <select
+                          value={f.documentType}
+                          onChange={(e) => setBulkFileType(i, e.target.value)}
+                          className="rounded-lg border border-white/10 bg-slate-900 px-2 py-1.5 text-[12.6px] font-semibold text-slate-200 focus:outline-none focus:border-blue-300/40"
+                        >
+                          {DOCUMENT_TYPES.map((t) => (
+                            <option key={t} value={t}>{t}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => removeBulkFile(i)}
+                          className="shrink-0 text-[12.6px] font-bold text-rose-300 hover:text-rose-200"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {bulkFiles.length > 0 && (
+                  <button
+                    onClick={handleBulkUpload}
+                    className="w-full rounded-2xl bg-gradient-to-r from-blue-600 to-cyan-500 px-5 py-3.5 text-[14.7px] font-black text-white shadow-[0_18px_45px_rgba(37,99,235,0.3)] transition-all hover:-translate-y-0.5 hover:shadow-[0_22px_60px_rgba(37,99,235,0.42)]"
+                  >
+                    Upload All ({bulkFiles.length})
+                  </button>
+                )}
+
+                <GuidelineCard />
+              </div>
+            )
+          ) : isProcessing ? (
             <UploadProcessingState
               message={status === 'uploading' ? 'Uploading document...' : 'Running OCR + AI analysis...'}
             />

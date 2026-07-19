@@ -4,6 +4,7 @@ import api from '../utils/api'
 import PaginationControls from '../components/PaginationControls'
 import Banner from '../components/Banner'
 import Modal from '../components/Modal'
+import ConfirmModal from '../components/ConfirmModal'
 
 const PAGE_SIZE = 30
 
@@ -90,6 +91,7 @@ export default function AdminDocumentsPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [editingDoc, setEditingDoc] = useState(null)
+  const [deletingDoc, setDeletingDoc] = useState(null)
   const [busyId, setBusyId] = useState(null)
 
   async function load(pageToLoad = page) {
@@ -110,16 +112,17 @@ export default function AdminDocumentsPage() {
   useEffect(() => { load(page) }, [page])
 
   async function deleteDoc(doc) {
-    if (!window.confirm(`Delete this ${doc.documentType} document owned by ${doc.userId?.username || 'unknown'}?`)) return
     setBusyId(doc._id)
     setError('')
     setSuccess('')
     try {
       await api.delete(`/admin/documents/${doc._id}`)
       setSuccess('Document deleted.')
+      setDeletingDoc(null)
       load(page)
     } catch (err) {
       setError(err.userMessage || 'Could not delete document.')
+      setDeletingDoc(null)
     } finally {
       setBusyId(null)
     }
@@ -174,7 +177,7 @@ export default function AdminDocumentsPage() {
                       <button onClick={() => setEditingDoc(d)} className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-[11.6px] font-bold text-slate-300 hover:border-emerald-300/30">
                         Edit
                       </button>
-                      <button disabled={busyId === d._id} onClick={() => deleteDoc(d)} className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-[11.6px] font-bold text-rose-300 hover:border-rose-300/30 hover:bg-rose-500/10 disabled:opacity-50">
+                      <button disabled={busyId === d._id} onClick={() => setDeletingDoc(d)} className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-[11.6px] font-bold text-rose-300 hover:border-rose-300/30 hover:bg-rose-500/10 disabled:opacity-50">
                         Delete
                       </button>
                     </div>
@@ -198,6 +201,15 @@ export default function AdminDocumentsPage() {
               setEditingDoc((prev) => ({ ...updated, userId: prev.userId }))
               setSuccess(message)
             }}
+          />
+        )}
+        {deletingDoc && (
+          <ConfirmModal
+            title="Delete this document?"
+            message={`Delete this ${deletingDoc.documentType} document owned by ${deletingDoc.userId?.username || 'unknown'}? This cannot be undone.`}
+            onConfirm={() => deleteDoc(deletingDoc)}
+            onClose={() => setDeletingDoc(null)}
+            busy={busyId === deletingDoc._id}
           />
         )}
       </AnimatePresence>

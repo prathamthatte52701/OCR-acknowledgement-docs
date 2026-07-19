@@ -5,6 +5,19 @@ const IMAGE_ONLY_TYPES = ['image/jpeg', 'image/jpg', 'image/png']
 const MAX_SIZE_MB = 5
 const documentTypes = ['Tax Invoice', 'Delivery Challan']
 
+// Shared with the bulk-upload flow (UploadPage) so both places enforce the
+// exact same type/size rules the backend does, without duplicating them.
+export function validateDocumentFile(file, { imageOnly = false } = {}) {
+  const acceptedTypes = imageOnly ? IMAGE_ONLY_TYPES : ACCEPTED_TYPES
+  if (!acceptedTypes.includes(file.type)) {
+    return imageOnly ? 'Only JPG, JPEG, and PNG files are allowed.' : 'Only JPG, JPEG, PNG, and PDF files are allowed.'
+  }
+  if (file.size > MAX_SIZE_MB * 1024 * 1024) {
+    return `File size must be ${MAX_SIZE_MB} MB or less.`
+  }
+  return null
+}
+
 // `compact` + `label` render a smaller box for the two-image (Part 1/Part 2)
 // upload flow; `imageOnly` restricts to JPG/PNG (no PDF) for that same flow,
 // since a manually-cropped section is always a photo, never a PDF page.
@@ -12,16 +25,9 @@ export default function UploadCard({ onFileSelect, disabled, compact = false, la
   const inputRef = useRef(null)
   const [dragOver, setDragOver] = useState(false)
   const [error, setError] = useState('')
-  const acceptedTypes = imageOnly ? IMAGE_ONLY_TYPES : ACCEPTED_TYPES
 
   function validateFile(file) {
-    if (!acceptedTypes.includes(file.type)) {
-      return imageOnly ? 'Only JPG, JPEG, and PNG files are allowed.' : 'Only JPG, JPEG, PNG, and PDF files are allowed.'
-    }
-    if (file.size > MAX_SIZE_MB * 1024 * 1024) {
-      return `File size must be ${MAX_SIZE_MB} MB or less.`
-    }
-    return null
+    return validateDocumentFile(file, { imageOnly })
   }
 
   function handleFile(file) {

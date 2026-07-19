@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import RequireAuth from './components/RequireAuth'
 import AppLayout from './components/AppLayout'
+import ServerDownBanner from './components/ServerDownBanner'
 import LoginPage from './pages/LoginPage'
 import SignupPage from './pages/SignupPage'
 import ForgotPasswordPage from './pages/ForgotPasswordPage'
@@ -17,6 +18,7 @@ import NotFoundPage from './pages/NotFoundPage'
 export default function App() {
   return (
     <BrowserRouter>
+      <ServerDownBanner />
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />

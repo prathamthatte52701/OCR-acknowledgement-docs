@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import api, { saveDocument } from '../utils/api'
 import CorrectionModal from '../components/CorrectionModal'
+import ConfirmModal from '../components/ConfirmModal'
 import LoadingState from '../components/LoadingState'
 import ErrorMessage from '../components/ErrorMessage'
 import ProcessingState from '../components/ProcessingState'
@@ -67,6 +68,7 @@ export default function DocumentDetailPage() {
   const [reprocessMsg, setReprocessMsg] = useState('')
   const [deleting, setDeleting] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   async function fetchDoc() {
     try {
@@ -135,7 +137,6 @@ export default function DocumentDetailPage() {
   }
 
   async function handleDelete() {
-    if (!window.confirm('Delete this document? This cannot be undone.')) return
     setDeleting(true)
     try {
       await api.delete(`/documents/${id}`)
@@ -143,6 +144,7 @@ export default function DocumentDetailPage() {
     } catch (err) {
       alert(err.userMessage || 'Could not delete this document. Please try again.')
       setDeleting(false)
+      setConfirmingDelete(false)
     }
   }
 
@@ -223,7 +225,7 @@ export default function DocumentDetailPage() {
         <button onClick={handleReprocess} disabled={reprocessing} className="px-4 py-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-300 text-[14.7px] rounded-lg transition-colors">
           {reprocessing ? 'Reprocessing...' : 'Reprocess'}
         </button>
-        <button onClick={handleDelete} disabled={deleting} className="px-4 py-2 bg-red-900/30 hover:bg-red-900/50 disabled:opacity-50 text-red-400 text-[14.7px] rounded-lg border border-red-800/50 transition-colors">
+        <button onClick={() => setConfirmingDelete(true)} disabled={deleting} className="px-4 py-2 bg-red-900/30 hover:bg-red-900/50 disabled:opacity-50 text-red-400 text-[14.7px] rounded-lg border border-red-800/50 transition-colors">
           {deleting ? 'Deleting...' : 'Delete'}
         </button>
       </div>
@@ -264,6 +266,16 @@ export default function DocumentDetailPage() {
           field={{ label: editingField.label, value: editingField.value, key: editingField.key }}
           onSave={handleCorrect}
           onClose={() => setEditingField(null)}
+        />
+      )}
+
+      {confirmingDelete && (
+        <ConfirmModal
+          title="Delete this document?"
+          message="Are you sure you want to delete this document? This cannot be undone."
+          onConfirm={handleDelete}
+          onClose={() => setConfirmingDelete(false)}
+          busy={deleting}
         />
       )}
     </div>

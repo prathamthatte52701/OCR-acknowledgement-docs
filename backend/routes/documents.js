@@ -53,17 +53,26 @@ const PDF_PARSE_TIMEOUT_MS = 60000
 
 const DOCUMENT_TYPES = ['Tax Invoice', 'Delivery Challan']
 
+const MAX_BULK_FILES = 5
+
+function documentFileFilter(req, file, cb) {
+  const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'application/pdf']
+  if (!allowed.includes(file.mimetype)) {
+    return cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'Only JPG, JPEG, PNG, and PDF files are allowed.'))
+  }
+  cb(null, true)
+}
+
 const storage = multer.memoryStorage()
 const upload = multer({
   storage,
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter(req, file, cb) {
-    const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'application/pdf']
-    if (!allowed.includes(file.mimetype)) {
-      return cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'Only JPG, JPEG, PNG, and PDF files are allowed.'))
-    }
-    cb(null, true)
-  },
+  fileFilter: documentFileFilter,
+})
+const bulkUpload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: documentFileFilter,
 })
 
 // Wrap multer to catch its errors cleanly
@@ -73,6 +82,31 @@ function uploadMiddleware(req, res, next) {
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
         return res.status(400).json({ error: 'File size must be 5 MB or less.' })
+      }
+      return res.status(400).json({ error: err.field || 'Only JPG, JPEG, PNG, and PDF files are allowed.' })
+    }
+    return res.status(400).json({ error: err.message || 'Upload failed.' })
+  })
+}
+
+// Same wrapping as uploadMiddleware, plus the file-count limit (maxCount on
+// .array() itself triggers LIMIT_FILE_COUNT) - rejects a 6th+ file before any
+// of them are even read into memory.
+function bulkUploadMiddleware(req, res, next) {
+  bulkUpload.array('documents', MAX_BULK_FILES)(req, res, (err) => {
+    if (!err) return next()
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'Each file must be 5 MB or less.' })
+      }
+      // .array()'s own maxCount overflow raises LIMIT_UNEXPECTED_FILE too (not
+      // LIMIT_FILE_COUNT), with .field set to the real field name
+      // ('documents') - the same code documentFileFilter raises for a
+      // rejected file type, but that always sets .field to a full custom
+      // sentence, which can never equal the literal field name. Checking
+      // .field against it is what actually tells the two apart.
+      if (err.code === 'LIMIT_FILE_COUNT' || (err.code === 'LIMIT_UNEXPECTED_FILE' && err.field === 'documents')) {
+        return res.status(400).json({ error: `You can upload a maximum of ${MAX_BULK_FILES} files at once.` })
       }
       return res.status(400).json({ error: err.field || 'Only JPG, JPEG, PNG, and PDF files are allowed.' })
     }
@@ -185,6 +219,83 @@ router.post('/upload', uploadMiddleware, async (req, res) => {
   }
 })
 
+// POST /api/documents/bulk-upload - up to 5 files in one request, field
+// 'documents' (repeated) + one 'documentTypes' value per file in the same
+// order. Each file becomes its own Document row, validated and uploaded to
+// GridFS one after another in this loop (not Promise.all), then queued
+// through the exact same enqueue()/processDocument() pipeline a single
+// upload uses - nothing here duplicates that logic. The shared single-slot
+// queue at the top of this file (unchanged) is what actually guarantees a
+// file's whole OCR->AI->save pipeline finishes before the next one starts,
+// even though every job below is enqueued up front.
+router.post('/bulk-upload', bulkUploadMiddleware, async (req, res) => {
+  try {
+    const files = req.files || []
+    if (files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded.' })
+    }
+
+    const documentTypes = [].concat(req.body.documentTypes || [])
+    if (documentTypes.length !== files.length) {
+      return res.status(400).json({ error: 'Each file needs a document type.' })
+    }
+    for (const documentType of documentTypes) {
+      if (!DOCUMENT_TYPES.includes(documentType)) {
+        return res.status(400).json({ error: 'Please choose a document type - Tax Invoice or Delivery Challan - for every file.' })
+      }
+    }
+
+    const results = []
+    for (let i = 0; i < files.length; i++) {
+      const { buffer, mimetype, originalname, size } = files[i]
+      const documentType = documentTypes[i]
+
+      const detectedMimeType = detectMimeType(buffer)
+      if (!mimeMatchesUpload(mimetype, detectedMimeType)) {
+        results.push({ originalFilename: originalname, error: 'File content does not match the selected file type.' })
+        continue
+      }
+
+      if (mimetype === 'application/pdf') {
+        const pages = await getPDFPageCount(buffer)
+        if (!pages) {
+          results.push({ originalFilename: originalname, error: 'Could not read this PDF. Please upload a valid PDF or convert it to JPG/PNG.' })
+          continue
+        }
+        if (pages > 4) {
+          results.push({ originalFilename: originalname, error: 'PDF must be 4 pages or less.' })
+          continue
+        }
+      }
+
+      const autoName = nameFromOriginalFilename(originalname)
+      const gridFsFileId = await uploadBuffer(buffer, originalname, mimetype)
+
+      const doc = await Document.create({
+        userId: req.userId,
+        autoName,
+        originalFilename: originalname,
+        mimeType: mimetype,
+        size,
+        gridFsFileId,
+        documentType,
+        uploadStatus: 'uploaded',
+      })
+
+      enqueue(() => processDocument(doc._id, buffer, mimetype, documentType), req.userId).catch(err => {
+        console.error('Background processing error:', err.message)
+      })
+
+      results.push({ document: doc })
+    }
+
+    res.status(201).json({ results })
+  } catch (err) {
+    console.error('Bulk upload error:', err)
+    res.status(500).json({ error: 'Something went wrong while processing these documents.' })
+  }
+})
+
 async function processDocument(docId, buffer, mimeType, documentType) {
   try {
     const headerText = await extractHeaderText(buffer, mimeType)
@@ -262,13 +373,34 @@ async function recoverInterruptedUploads() {
   return docs.length
 }
 
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 // GET /api/documents
 // Paginated only when ?page= is passed (My Documents page). No ?page ->
 // unchanged full-list behavior, since Dashboard relies on getting every
 // document back to compute its stats/recent-docs widget from.
+// Optional search: ?number= does a case-insensitive partial match against
+// whichever number field this document's type actually uses (taxInvoiceNo/
+// referenceNo for Tax Invoice, number for Delivery Challan) - matching all
+// three lets one search box work regardless of document type. ?date= is an
+// exact match, since it comes from a date picker rather than free text.
 router.get('/', async (req, res) => {
   try {
     const filter = { userId: req.userId, isDeleted: { $ne: true } }
+
+    if (req.query.number && req.query.number.trim()) {
+      const numberRegex = new RegExp(escapeRegex(req.query.number.trim()), 'i')
+      filter.$or = [
+        { taxInvoiceNo: numberRegex },
+        { referenceNo: numberRegex },
+        { number: numberRegex },
+      ]
+    }
+    if (req.query.date && req.query.date.trim()) {
+      filter.date = req.query.date.trim()
+    }
 
     if (req.query.page) {
       const limit = Math.max(1, parseInt(req.query.limit, 10) || 30)

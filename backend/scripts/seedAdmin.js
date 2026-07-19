@@ -13,30 +13,33 @@ const bcrypt = require('bcryptjs')
 const User = require('../models/User')
 
 const SALT_ROUNDS = 10
-const ADMIN_NAME = 'Arjav Jain'
-const ADMIN_EMAIL = 'arjav99jain@gmail.com'
-const ADMIN_PASSWORD = 'ArjavJain@99'
+const ADMINS = [
+  { name: 'Arjav Jain', email: 'arjav99jain@gmail.com', password: 'ArjavJain@99' },
+  { name: 'Pratham Thatte', email: 'prathamthatte527@gmail.com', password: 'Pratham@/@/1' },
+]
 
 async function main() {
   await mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/docintel')
 
-  const existing = await User.findOne({ email: ADMIN_EMAIL })
-  if (existing) {
-    console.log(`Admin account already exists (${ADMIN_EMAIL}), role: ${existing.role}. Nothing to do.`)
-    await mongoose.disconnect()
-    return
+  for (const { name, email, password } of ADMINS) {
+    const existing = await User.findOne({ email })
+    if (existing) {
+      console.log(`Admin account already exists (${email}), role: ${existing.role}. Nothing to do.`)
+      continue
+    }
+
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS)
+    const admin = new User({
+      username: name,
+      email,
+      passwordHash,
+      role: 'admin',
+    })
+    await admin.save()
+
+    console.log(`Admin account created: ${email} (role: admin).`)
   }
 
-  const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, SALT_ROUNDS)
-  const admin = new User({
-    username: ADMIN_NAME,
-    email: ADMIN_EMAIL,
-    passwordHash,
-    role: 'admin',
-  })
-  await admin.save()
-
-  console.log(`Admin account created: ${ADMIN_EMAIL} (role: admin).`)
   await mongoose.disconnect()
 }
 

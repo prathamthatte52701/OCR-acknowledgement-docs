@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { useState, useEffect, useRef } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import api from '../utils/api'
 import DocumentList from '../components/DocumentList'
 
@@ -45,6 +45,11 @@ function DocumentsError({ message, onRetry }) {
 const PAGE_SIZE = 30
 
 export default function DocumentsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const numberQuery = searchParams.get('number') || ''
+  const dateQuery = searchParams.get('date') || ''
+  const isSearching = Boolean(numberQuery || dateQuery)
+
   const [documents, setDocuments] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -56,7 +61,14 @@ export default function DocumentsPage() {
     setLoading(true)
     setError('')
     try {
-      const res = await api.get('/documents', { params: { page: pageToLoad, limit: PAGE_SIZE } })
+      const res = await api.get('/documents', {
+        params: {
+          page: pageToLoad,
+          limit: PAGE_SIZE,
+          ...(numberQuery && { number: numberQuery }),
+          ...(dateQuery && { date: dateQuery }),
+        },
+      })
       setDocuments(res.data?.documents || [])
       setTotalPages(res.data?.totalPages || 1)
       setTotalDocuments(res.data?.totalDocuments || 0)
@@ -67,10 +79,38 @@ export default function DocumentsPage() {
     }
   }
 
+  function clearSearch() {
+    setSearchParams({})
+  }
+
+  // A new/changed search should always land on page 1. Guarding on a ref
+  // (rather than a second effect keyed only on the search params) avoids an
+  // extra wasted fetch with the stale page number in the common case where
+  // page is already 1 when the search changes.
+  const prevSearchKeyRef = useRef(`${numberQuery}|${dateQuery}`)
+
   useEffect(() => {
     let cancelled = false
+    const searchKey = `${numberQuery}|${dateQuery}`
+    if (searchKey !== prevSearchKeyRef.current) {
+      prevSearchKeyRef.current = searchKey
+      if (page !== 1) {
+        setPage(1)
+        return
+      }
+    }
 
-    api.get('/documents', { params: { page, limit: PAGE_SIZE } })
+    setLoading(true)
+    setError('')
+
+    api.get('/documents', {
+      params: {
+        page,
+        limit: PAGE_SIZE,
+        ...(numberQuery && { number: numberQuery }),
+        ...(dateQuery && { date: dateQuery }),
+      },
+    })
       .then(res => {
         if (cancelled) return
         setDocuments(res.data?.documents || [])
@@ -85,7 +125,7 @@ export default function DocumentsPage() {
       })
 
     return () => { cancelled = true }
-  }, [page])
+  }, [page, numberQuery, dateQuery])
 
   return (
     <div className="relative min-h-full overflow-hidden bg-[#020817]">
@@ -100,6 +140,19 @@ export default function DocumentsPage() {
               <span className="h-2 w-2 rounded-full bg-blue-400 shadow-[0_0_16px_rgba(96,165,250,0.85)]" />
               {loading ? 'Loading documents...' : `${totalDocuments} document${totalDocuments !== 1 ? 's' : ''}`}
             </p>
+            {isSearching && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-[13.6px] text-slate-400">
+                <span>
+                  Filtered by{numberQuery && ` number "${numberQuery}"`}{numberQuery && dateQuery && ' and'}{dateQuery && ` date ${dateQuery}`}
+                </span>
+                <button
+                  onClick={clearSearch}
+                  className="rounded-full border border-white/10 bg-white/[0.045] px-3 py-1 text-[12.6px] font-bold text-blue-300 transition-colors hover:border-blue-300/30 hover:bg-blue-500/10"
+                >
+                  Clear Search
+                </button>
+              </div>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <button
@@ -135,6 +188,20 @@ export default function DocumentsPage() {
           <DocumentsSkeleton />
         ) : error ? (
           <DocumentsError message={error} onRetry={() => fetchDocuments(page)} />
+        ) : isSearching && documents.length === 0 ? (
+          <div className="rounded-[30px] border border-blue-300/12 bg-slate-900/62 p-10 text-center shadow-[0_28px_100px_rgba(2,8,23,0.35)] backdrop-blur-xl">
+            <div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl border border-blue-300/18 bg-blue-500/10 text-[14.7px] font-black text-blue-200 shadow-[0_0_42px_rgba(37,99,235,0.2)]">N/A</div>
+            <h2 className="mt-5 text-2xl font-black text-white">No results found</h2>
+            <p className="mx-auto mt-2 max-w-md text-[14.7px] leading-6 text-slate-500">
+              No documents match{numberQuery && ` number "${numberQuery}"`}{numberQuery && dateQuery && ' and'}{dateQuery && ` date ${dateQuery}`}.
+            </p>
+            <button
+              onClick={clearSearch}
+              className="mt-6 inline-flex rounded-2xl border border-white/10 bg-white/[0.045] px-5 py-3 text-[14.7px] font-bold text-slate-200 transition-colors hover:border-blue-300/30 hover:bg-blue-500/10"
+            >
+              Clear Search
+            </button>
+          </div>
         ) : (
           <>
             <DocumentList documents={documents} />

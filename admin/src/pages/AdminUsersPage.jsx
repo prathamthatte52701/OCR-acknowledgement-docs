@@ -5,6 +5,7 @@ import { validateUsername, validateEmail } from '../utils/validators'
 import PaginationControls from '../components/PaginationControls'
 import Banner from '../components/Banner'
 import Modal from '../components/Modal'
+import ConfirmModal from '../components/ConfirmModal'
 
 const PAGE_SIZE = 30
 
@@ -66,6 +67,7 @@ export default function AdminUsersPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [editingUser, setEditingUser] = useState(null)
+  const [deletingUser, setDeletingUser] = useState(null)
   const [busyId, setBusyId] = useState(null)
 
   async function load(pageToLoad = page) {
@@ -102,16 +104,17 @@ export default function AdminUsersPage() {
   }
 
   async function deleteUser(user) {
-    if (!window.confirm(`Delete ${user.username} (${user.email})? This permanently removes their documents, workbooks, and exports.`)) return
     setBusyId(user._id)
     setError('')
     setSuccess('')
     try {
       await api.delete(`/admin/users/${user._id}`)
       setSuccess('User deleted.')
+      setDeletingUser(null)
       load(page)
     } catch (err) {
       setError(err.userMessage || 'Could not delete user.')
+      setDeletingUser(null)
     } finally {
       setBusyId(null)
     }
@@ -159,7 +162,7 @@ export default function AdminUsersPage() {
                       <button onClick={() => setEditingUser(u)} className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-[11.6px] font-bold text-slate-300 hover:border-emerald-300/30">
                         Edit
                       </button>
-                      <button disabled={busyId === u._id} onClick={() => deleteUser(u)} className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-[11.6px] font-bold text-rose-300 hover:border-rose-300/30 hover:bg-rose-500/10 disabled:opacity-50">
+                      <button disabled={busyId === u._id} onClick={() => setDeletingUser(u)} className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-[11.6px] font-bold text-rose-300 hover:border-rose-300/30 hover:bg-rose-500/10 disabled:opacity-50">
                         Delete
                       </button>
                     </div>
@@ -183,6 +186,15 @@ export default function AdminUsersPage() {
               setEditingUser(null)
               setSuccess(message)
             }}
+          />
+        )}
+        {deletingUser && (
+          <ConfirmModal
+            title="Delete this user?"
+            message={`Delete ${deletingUser.username} (${deletingUser.email})? This permanently removes their documents, workbooks, and exports. This cannot be undone.`}
+            onConfirm={() => deleteUser(deletingUser)}
+            onClose={() => setDeletingUser(null)}
+            busy={busyId === deletingUser._id}
           />
         )}
       </AnimatePresence>

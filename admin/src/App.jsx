@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { AdminAuthProvider } from './context/AdminAuthContext'
 import RequireAdminAuth from './components/RequireAdminAuth'
 import AdminLayout from './components/AdminLayout'
+import ServerDownBanner from './components/ServerDownBanner'
 import AdminLoginPage from './pages/AdminLoginPage'
 import AdminForgotPasswordPage from './pages/AdminForgotPasswordPage'
 import AdminDashboardPage from './pages/AdminDashboardPage'
@@ -52,6 +53,7 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
+      <ServerDownBanner />
       <AdminAuthProvider>
         <AppRoutes />
       </AdminAuthProvider>

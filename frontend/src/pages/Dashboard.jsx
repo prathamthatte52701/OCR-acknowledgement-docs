@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import api, { downloadWorkbook } from '../utils/api'
 import LoadingState from '../components/LoadingState'
@@ -265,6 +265,63 @@ function FeedbackAnalyticsPanel({ feedback }) {
   )
 }
 
+// Native <input type="date"> gives back YYYY-MM-DD; the app stores/searches
+// dates as DD/MM/YYYY everywhere else, so convert before it ever leaves this form.
+function isoDateToDDMMYYYY(iso) {
+  if (!iso) return ''
+  const [y, m, d] = iso.split('-')
+  return `${d}/${m}/${y}`
+}
+
+function DocumentSearchBar() {
+  const navigate = useNavigate()
+  const [number, setNumber] = useState('')
+  const [date, setDate] = useState('')
+
+  function handleSearch() {
+    const params = new URLSearchParams()
+    if (number.trim()) params.set('number', number.trim())
+    if (date) params.set('date', isoDateToDDMMYYYY(date))
+    const query = params.toString()
+    navigate(query ? `/documents?${query}` : '/documents')
+  }
+
+  return (
+    <section className="mt-5 rounded-[28px] border border-blue-300/12 bg-slate-900/68 p-5 shadow-2xl shadow-slate-950/30 backdrop-blur-xl sm:p-6">
+      <h2 className="text-lg font-black text-white">Search Documents</h2>
+      <p className="mt-1 text-[14.7px] text-slate-500">Find a document by number or date - opens the results in My Documents.</p>
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+        <div className="flex-1">
+          <label className="mb-2 block text-[12.6px] font-bold uppercase tracking-[0.1em] text-blue-300">Number</label>
+          <input
+            type="text"
+            value={number}
+            onChange={(e) => setNumber(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+            placeholder="e.g. 820268362"
+            className="w-full rounded-2xl border border-white/10 bg-white/[0.045] px-4 py-3 text-[14.7px] text-white placeholder:text-slate-600 transition-colors focus:border-blue-300/40 focus:outline-none"
+          />
+        </div>
+        <div>
+          <label className="mb-2 block text-[12.6px] font-bold uppercase tracking-[0.1em] text-blue-300">Date</label>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="[color-scheme:dark] rounded-2xl border border-white/10 bg-white/[0.045] px-4 py-3 text-[14.7px] text-white transition-colors focus:border-blue-300/40 focus:outline-none"
+          />
+        </div>
+        <button
+          onClick={handleSearch}
+          className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-blue-600 to-cyan-500 px-6 py-3 text-[14.7px] font-black text-white shadow-[0_18px_45px_rgba(37,99,235,0.3)] transition-all hover:-translate-y-0.5 hover:shadow-[0_22px_60px_rgba(37,99,235,0.42)]"
+        >
+          Search
+        </button>
+      </div>
+    </section>
+  )
+}
+
 export default function Dashboard() {
   const [stats, setStats] = useState({ total: 0, processed: 0, failed: 0, processedToday: 0, taxInvoice: 0, deliveryChallan: 0 })
   const [recentDocs, setRecentDocs] = useState([])
@@ -368,6 +425,8 @@ export default function Dashboard() {
 
           <HeroIllustration />
         </section>
+
+        <DocumentSearchBar />
 
         {loading ? (
           <section className="mt-6 rounded-[28px] border border-blue-300/12 bg-slate-900/68 shadow-2xl shadow-slate-950/30 backdrop-blur-xl">
