@@ -3,7 +3,23 @@ import api from '../utils/api'
 import Banner from '../components/Banner'
 
 async function downloadWorkbook(id, filename) {
-  const res = await api.get(`/admin/workbooks/${id}/download`, { responseType: 'blob' })
+  let res
+  try {
+    res = await api.get(`/admin/workbooks/${id}/download`, { responseType: 'blob' })
+  } catch (err) {
+    // With responseType 'blob', a JSON error body (e.g. 404 "file not found
+    // on the server") arrives as a Blob too, not parsed JSON - err.userMessage
+    // ends up undefined and the generic "Something went wrong" shows instead
+    // of the real reason. Re-read the blob as text and parse it here.
+    let body = null
+    if (err.response?.data instanceof Blob) {
+      try { body = JSON.parse(await err.response.data.text()) } catch { body = null }
+    } else {
+      body = err.response?.data || null
+    }
+    throw Object.assign(err, { userMessage: body?.message || body?.error || err.userMessage })
+  }
+
   const url = window.URL.createObjectURL(new Blob([res.data]))
   const a = document.createElement('a')
   a.href = url
