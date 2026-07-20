@@ -13,6 +13,7 @@ import DocumentDetailPage from './pages/DocumentDetailPage'
 import DocumentChatPage from './pages/DocumentChatPage'
 import ExportHistoryPage from './pages/ExportHistoryPage'
 import ProfilePage from './pages/ProfilePage'
+import HelpPage from './pages/HelpPage'
 import NotFoundPage from './pages/NotFoundPage'
 
 export default function App() {
@@ -34,6 +35,7 @@ export default function App() {
               <Route path="/documents/:id/chat" element={<DocumentChatPage />} />
               <Route path="/export-history" element={<ExportHistoryPage />} />
               <Route path="/profile" element={<ProfilePage />} />
+              <Route path="/help" element={<HelpPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Route>
