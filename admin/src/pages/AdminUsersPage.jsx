@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { AnimatePresence } from 'framer-motion'
 import api from '../utils/api'
 import { validateUsername, validateEmail } from '../utils/validators'
@@ -147,7 +148,9 @@ export default function AdminUsersPage() {
             <tbody>
               {users.map((u) => (
                 <tr key={u._id} className="border-b border-white/5 last:border-0">
-                  <td className="px-4 py-3 font-bold text-white">{u.username}</td>
+                  <td className="px-4 py-3 font-bold text-white">
+                    <Link to={`/users/${u._id}`} className="hover:text-emerald-300 hover:underline">{u.username}</Link>
+                  </td>
                   <td className="px-4 py-3 text-slate-400">{u.email}</td>
                   <td className="px-4 py-3">
                     <span className={`rounded-full border px-2.5 py-1 text-[11.6px] font-black uppercase ${u.role === 'admin' ? 'border-emerald-300/25 bg-emerald-500/10 text-emerald-200' : 'border-white/10 bg-white/5 text-slate-400'}`}>
@@ -157,6 +160,9 @@ export default function AdminUsersPage() {
                   <td className="px-4 py-3 text-slate-500">{formatISTDate(u.createdAt)}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
+                      <Link to={`/users/${u._id}`} className="rounded-full border border-emerald-300/25 bg-emerald-500/10 px-3 py-1.5 text-[11.6px] font-bold text-emerald-200 hover:border-emerald-300/45">
+                        View Activity
+                      </Link>
                       <button disabled={busyId === u._id} onClick={() => toggleRole(u)} className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-[11.6px] font-bold text-slate-300 hover:border-emerald-300/30 disabled:opacity-50">
                         {u.role === 'admin' ? 'Make user' : 'Make admin'}
                       </button>

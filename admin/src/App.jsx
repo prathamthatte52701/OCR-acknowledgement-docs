@@ -9,6 +9,7 @@ import AdminForgotPasswordPage from './pages/AdminForgotPasswordPage'
 import AdminDashboardPage from './pages/AdminDashboardPage'
 import AdminProfilePage from './pages/AdminProfilePage'
 import AdminUsersPage from './pages/AdminUsersPage'
+import AdminUserDetailPage from './pages/AdminUserDetailPage'
 import AdminDocumentsPage from './pages/AdminDocumentsPage'
 import AdminWorkbooksPage from './pages/AdminWorkbooksPage'
 import AdminLogsPage from './pages/AdminLogsPage'
@@ -38,6 +39,7 @@ function AppRoutes() {
           <Route element={<AdminLayout />}>
             <Route path="/" element={<FadeIn><AdminDashboardPage /></FadeIn>} />
             <Route path="/users" element={<FadeIn><AdminUsersPage /></FadeIn>} />
+            <Route path="/users/:id" element={<FadeIn><AdminUserDetailPage /></FadeIn>} />
             <Route path="/documents" element={<FadeIn><AdminDocumentsPage /></FadeIn>} />
             <Route path="/workbooks" element={<FadeIn><AdminWorkbooksPage /></FadeIn>} />
             <Route path="/logs" element={<FadeIn><AdminLogsPage /></FadeIn>} />

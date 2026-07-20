@@ -182,11 +182,16 @@ router.delete('/users/:id', async (req, res) => {
 // Documents (cross-user)
 // ---------------------------------------------------------------------------
 
-// GET /api/admin/documents - every user's documents, owner attached.
+// GET /api/admin/documents?userId= - every user's documents (owner attached),
+// or one user's documents when userId is given.
 router.get('/documents', async (req, res) => {
   try {
     const { limit, page, skip } = parsePagination(req.query)
     const filter = { isDeleted: { $ne: true } }
+    if (req.query.userId) {
+      if (!isValidObjectId(req.query.userId)) return res.status(400).json({ error: 'Invalid userId.' })
+      filter.userId = req.query.userId
+    }
     const [documents, totalDocuments] = await Promise.all([
       Document.find(filter)
         .sort({ createdAt: -1 })
@@ -311,6 +316,40 @@ router.get('/workbooks/:id/download', async (req, res) => {
   } catch (err) {
     console.error('Admin workbook download error:', err)
     res.status(500).json({ error: 'Failed to download the workbook.' })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Exports (cross-user)
+// ---------------------------------------------------------------------------
+
+// GET /api/admin/exports?userId= - every export ever made (workbook attached),
+// or one user's exports when userId is given.
+router.get('/exports', async (req, res) => {
+  try {
+    const { limit, page, skip } = parsePagination(req.query)
+    const filter = {}
+    if (req.query.userId) {
+      if (!isValidObjectId(req.query.userId)) return res.status(400).json({ error: 'Invalid userId.' })
+      filter.userId = req.query.userId
+    }
+    const [exports, totalExports] = await Promise.all([
+      ExportedRow.find(filter)
+        .sort({ exportedAt: -1 })
+        .populate('workbookId', 'filename year')
+        .skip(skip)
+        .limit(limit),
+      ExportedRow.countDocuments(filter),
+    ])
+    res.json({
+      exports,
+      totalExports,
+      totalPages: Math.max(1, Math.ceil(totalExports / limit)),
+      currentPage: page,
+    })
+  } catch (err) {
+    console.error('Admin list exports error:', err)
+    res.status(500).json({ error: 'Failed to list exports.' })
   }
 })
 

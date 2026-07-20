@@ -14,16 +14,6 @@ const { withTimeout } = require('../utils/withTimeout')
 // otherwise hang these calls forever and freeze the whole server.
 const PDF_PARSE_TIMEOUT_MS = 60000
 
-async function extractParts(buffer, mimeType) {
-  try {
-    if (mimeType === 'application/pdf') return await extractFromPDF(buffer)
-    return await extractFromImage(buffer, mimeType)
-  } catch (err) {
-    console.error('OCR error:', err.message)
-    return null
-  }
-}
-
 // -- Run OCR in isolated child process ----------------------------------------
 
 async function extractFromImage(buffer, mimeType = 'image/jpeg', singlePartMode = null) {
@@ -42,8 +32,6 @@ async function extractFromImage(buffer, mimeType = 'image/jpeg', singlePartMode 
 // User has already manually cropped this image down to exactly one section
 // (Consignee/Consignor header, or the Uncoded RGP line-items table) - the
 // worker skips auto-split entirely and OCRs the whole image as that one part.
-// This is the two-image upload flow; the combined-image auto-split flow above
-// (extractParts/extractFromImage with no singlePartMode) is untouched.
 async function extractSingleImagePart(buffer, mimeType, partLabel) {
   const result = await extractFromImage(buffer, mimeType, partLabel)
   return result
@@ -197,116 +185,6 @@ function runOCRWorker(imagePath, singlePartMode = null) {
 }
 
 // -- PDF extraction ------------------------------------------------------------
-// Digital PDFs (real text layer) go through pdf-parse as before. Scanned PDFs
-// (a photographed/printed page with no text layer - just an embedded image)
-// have no text layer to extract, so page 1 is rasterized to a PNG (in its own
-// isolated child process - see renderPdfPageToPng) and run through the exact
-// same image pipeline (4x upscale, Part1/Part2 split, Tesseract) used for
-// JPG/PNG uploads - no separate OCR logic is duplicated.
-
-async function extractFromPDF(buffer) {
-  try {
-    const { PDFParse } = require('pdf-parse')
-    const parser = new PDFParse({ data: buffer })
-    try {
-      const result = await withTimeout(parser.getText(), PDF_PARSE_TIMEOUT_MS, 'PDF text extraction')
-      const text = (result.pages || []).map(p => p.text).join('\n').trim()
-      if (text && text.length > 80) {
-        console.log(`PDF text layer: ${text.length} chars, ${result.total} pages`)
-        const cleaned = cleanOCRText(text)
-        // part1Text stays exactly this pdf-parse output, unchanged - Part 1 is
-        // working well off it and must not be touched. part2Text separately
-        // tries a position-reconstructed version of the SAME page (see below) -
-        // pdf-parse returns text in PDF content-stream order, not visual reading
-        // order, which breaks label/value and row adjacency for the line-items
-        // table specifically. If reconstruction fails for any reason, part2Text
-        // falls back to this same `cleaned` text - never worse than before.
-        const part2Reconstructed = await reconstructTextByPosition(buffer)
-        return { part1Text: cleaned, part2Text: part2Reconstructed || cleaned }
-      }
-    } finally {
-      await parser.destroy()
-    }
-  } catch (err) {
-    console.error('pdf-parse error:', err.message)
-  }
-
-  console.log('PDF has no readable text layer - treating as a scanned PDF, rasterizing page 1 for OCR.')
-  try {
-    const { pngBuffer, numPages } = await renderPdfPageToPng(buffer)
-    const result = await extractFromImage(pngBuffer, 'image/png')
-    if (!result) return null
-
-    // Only page 1 of a scanned PDF is ever rasterized/OCR'd - this app's document
-    // model assumes one bill per upload (every real sample is "Page 1 of 1"), so
-    // this is a deliberate scope limit, not a bug. Surface it when it matters so
-    // it's never a silent data-loss surprise on a genuinely multi-page file.
-    if (numPages > 1) {
-      const warning = `This PDF has ${numPages} pages - only page 1 was read. Upload additional pages separately if needed.`
-      console.warn(warning)
-      return { ...result, ocrWarnings: [warning] }
-    }
-    return result
-  } catch (err) {
-    console.error('Scanned PDF rasterization failed:', err.message)
-    return null
-  }
-}
-
-// Part 2 ONLY - rebuilds page-1 text using each text item's actual x/y position
-// instead of pdf-parse's content-stream order, so a row's cells and a table's
-// row-to-row order come out in real visual (top-to-bottom, left-to-right) order.
-// Part 1 never calls this and is unaffected either way; on any failure this
-// returns null and the caller falls back to the same `cleaned` text Part 1 uses,
-// so this can only ever match or improve Part 2, never make it worse.
-async function reconstructTextByPosition(buffer) {
-  try {
-    const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs')
-    const path = require('path')
-    const { pathToFileURL } = require('url')
-    const standardFontDataUrl = pathToFileURL(
-      path.join(path.dirname(require.resolve('pdfjs-dist/package.json')), 'standard_fonts') + path.sep
-    ).href
-
-    const doc = await withTimeout(
-      pdfjsLib.getDocument({ data: new Uint8Array(buffer), standardFontDataUrl, disableWorker: true }).promise,
-      PDF_PARSE_TIMEOUT_MS, 'PDF position reconstruction (load)'
-    )
-    const page = await doc.getPage(1)
-    const content = await withTimeout(page.getTextContent(), PDF_PARSE_TIMEOUT_MS, 'PDF position reconstruction (text content)')
-
-    const items = content.items
-      .map(it => ({ str: it.str, x: it.transform[4], y: it.transform[5] }))
-      .filter(it => it.str && it.str.trim())
-    if (!items.length) return null
-
-    // Group into visual rows: items within a small y-tolerance of each other
-    // belong to the same printed line, regardless of the order pdfjs returned
-    // them in. Tolerance is small relative to typical font size on this template.
-    const Y_TOLERANCE = 3
-    const rows = []
-    for (const item of items) {
-      let row = rows.find(r => Math.abs(r.y - item.y) <= Y_TOLERANCE)
-      if (!row) {
-        row = { y: item.y, items: [] }
-        rows.push(row)
-      }
-      row.items.push(item)
-    }
-
-    // PDF y-axis increases upward, so sort rows top-to-bottom by descending y;
-    // within a row, sort left-to-right by x - this is the actual visual order.
-    rows.sort((a, b) => b.y - a.y)
-    rows.forEach(r => r.items.sort((a, b) => a.x - b.x))
-
-    const text = rows.map(r => r.items.map(i => i.str).join(' ')).join('\n').trim()
-    return text ? cleanOCRText(text) : null
-  } catch (err) {
-    console.error('Position-based PDF text reconstruction failed (Part 2 only, falling back):', err.message)
-    return null
-  }
-}
-
 // Rasterizes page 1 of a PDF to a PNG in an isolated child process (mirrors
 // runOCRWorker's pattern) - pdfjs-dist + native canvas rendering on a malformed
 // or hostile scanned PDF must never be able to crash or hang the main server.
@@ -373,4 +251,4 @@ function cleanOCRText(text) {
     .trim()
 }
 
-module.exports = { extractParts, extractSingleImagePart, extractHeaderText }
+module.exports = { extractSingleImagePart, extractHeaderText }

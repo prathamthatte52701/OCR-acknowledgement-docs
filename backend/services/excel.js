@@ -106,4 +106,4 @@ async function appendRowNow(filename, month, row) {
   return target
 }
 
-module.exports = { createWorkbook, appendRow, filePath, currentPeriod, monthFromDate, EXPORT_DIR, MONTHS }
+module.exports = { createWorkbook, appendRow, filePath, currentPeriod, monthFromDate }
