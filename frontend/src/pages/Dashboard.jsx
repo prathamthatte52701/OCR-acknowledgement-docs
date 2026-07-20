@@ -2,6 +2,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import api, { downloadWorkbook } from '../utils/api'
 import LoadingState from '../components/LoadingState'
+import { formatIST, isTodayIST } from '../utils/formatDate'
 import challanRouteVisual from '../assets/transport-bill-route-visual.png'
 
 const features = [
@@ -20,25 +21,13 @@ const supportedTypes = [
 
 function formatDate(dateStr) {
   if (!dateStr) return 'Not processed'
-  return new Date(dateStr).toLocaleDateString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return formatIST(dateStr, { year: undefined })
 }
 
 function formatSize(bytes) {
   if (!bytes) return '0 KB'
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
-}
-
-function isToday(dateStr) {
-  if (!dateStr) return false
-  const date = new Date(dateStr)
-  const today = new Date()
-  return date.toDateString() === today.toDateString()
 }
 
 function StatusBadge({ status }) {
@@ -352,7 +341,7 @@ export default function Dashboard() {
         total: docs.length,
         processed: docs.filter(d => d.uploadStatus === 'processed').length,
         failed: docs.filter(d => d.uploadStatus === 'failed').length,
-        processedToday: docs.filter(d => d.uploadStatus === 'processed' && isToday(d.processedAt || d.reprocessedAt || d.updatedAt)).length,
+        processedToday: docs.filter(d => d.uploadStatus === 'processed' && isTodayIST(d.processedAt || d.reprocessedAt || d.updatedAt)).length,
         taxInvoice: byDocumentType['Tax Invoice'] || 0,
         deliveryChallan: byDocumentType['Delivery Challan'] || 0,
       })

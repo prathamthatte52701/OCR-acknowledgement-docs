@@ -1,12 +1,10 @@
 import { useState, useEffect } from 'react'
 import api, { downloadWorkbook } from '../utils/api'
 import LoadingState from '../components/LoadingState'
+import { formatIST } from '../utils/formatDate'
 
 function formatExportedAt(dateStr) {
-  if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleString('en-IN', {
-    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
-  })
+  return formatIST(dateStr)
 }
 
 // Same "which number to show" logic used by DocumentCard/DocumentDetailPage -

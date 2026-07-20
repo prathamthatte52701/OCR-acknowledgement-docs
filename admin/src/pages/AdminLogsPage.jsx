@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import api from '../utils/api'
 import PaginationControls from '../components/PaginationControls'
 import Banner from '../components/Banner'
+import { formatIST } from '../utils/formatDate'
 
 const PAGE_SIZE = 30
 const ACTIONS = ['login', 'signup', 'password_change', 'document_deleted', 'document_exported', 'document_corrected', 'user_updated', 'user_deleted']
@@ -84,7 +85,7 @@ export default function AdminLogsPage() {
             <tbody>
               {logs.map((l) => (
                 <tr key={l._id} className="border-b border-white/5 last:border-0">
-                  <td className="px-4 py-3 whitespace-nowrap text-slate-400">{new Date(l.createdAt).toLocaleString()}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-slate-400">{formatIST(l.createdAt)}</td>
                   <td className="px-4 py-3">
                     <div className="font-bold text-white">{l.userId?.username || 'unknown'}</div>
                     <div className="text-[11.6px] text-slate-500">{l.userId?.email}</div>

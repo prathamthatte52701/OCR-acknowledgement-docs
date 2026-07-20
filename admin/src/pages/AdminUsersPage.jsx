@@ -6,6 +6,7 @@ import PaginationControls from '../components/PaginationControls'
 import Banner from '../components/Banner'
 import Modal from '../components/Modal'
 import ConfirmModal from '../components/ConfirmModal'
+import { formatISTDate } from '../utils/formatDate'
 
 const PAGE_SIZE = 30
 
@@ -153,7 +154,7 @@ export default function AdminUsersPage() {
                       {u.role}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-slate-500">{new Date(u.createdAt).toLocaleDateString()}</td>
+                  <td className="px-4 py-3 text-slate-500">{formatISTDate(u.createdAt)}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
                       <button disabled={busyId === u._id} onClick={() => toggleRole(u)} className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-[11.6px] font-bold text-slate-300 hover:border-emerald-300/30 disabled:opacity-50">

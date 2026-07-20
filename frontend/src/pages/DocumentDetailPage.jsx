@@ -6,13 +6,10 @@ import ConfirmModal from '../components/ConfirmModal'
 import LoadingState from '../components/LoadingState'
 import ErrorMessage from '../components/ErrorMessage'
 import ProcessingState from '../components/ProcessingState'
+import { formatIST } from '../utils/formatDate'
 
 function formatDate(d) {
-  if (!d) return '-'
-  return new Date(d).toLocaleString('en-IN', {
-    day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  })
+  return formatIST(d)
 }
 
 function formatSize(bytes) {

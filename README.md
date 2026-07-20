@@ -34,7 +34,7 @@ AckIntel AI takes this manual job and automates almost all of it. Here is the sh
 No one has to re-type anything by hand unless the AI genuinely could not read a value — and even then, the app tells the user exactly what to fix instead of failing silently.
 
 **Who uses it:**
-- **Regular users** — people who upload documents day to day. They sign up, upload their own files, check and correct the extracted number/date, and keep their own Excel workbooks and export history. Each user only ever sees their own documents (with one shared exception: the Export History page, explained later).
+- **Regular users** — people who upload documents day to day. They sign up, upload their own files, check and correct the extracted number/date, and keep their own Excel workbooks and export history. Each user only ever sees their own documents, workbooks, and exports — including on the Export History page.
 - **Admins** — a small number of trusted staff who need to see everything, not just their own uploads. Admins get a separate admin panel where they can manage every user account, look at (and fix) any user's documents, download any user's Excel workbooks, read a full audit log of what happened in the system, and see overall numbers like total users, total documents, total exports, and how often OCR is failing.
 
 ## Features
@@ -72,7 +72,7 @@ This section lists what the app can actually do today, grouped by area.
 - When the calendar year changes, the app automatically notices and prompts the user to start a new workbook for the new year. The old workbook is not deleted — it is archived, and can still be downloaded later.
 - A user can also manually start a brand-new workbook at any time using "Start New Excel File" — for example, to begin a fresh batch. Again, the old one is archived rather than lost.
 - Users can download either their current active workbook or any older, archived workbook by picking the year.
-- There is one shared page, Export History, that is deliberately different from everything else in the app: it shows every export ever made by every user, not just the current user's own exports. This is intentional — it acts as a shared, company-wide audit trail of what has been exported and when, with a link back to the workbook each row came from.
+- The Export History page shows a user's own exports, newest first, with a link back to the workbook each row came from. Like everything else in the app, it is scoped to the current user — one user cannot see or download another user's exports or workbooks from this page.
 - Because more than one export could try to write to the same Excel file at once, all writes to a given workbook are lined up and done one at a time (serialized), so two saves happening close together can never overwrite or lose each other's row. If the file happens to be open in Microsoft Excel at the same time (which locks the file on disk), the app returns a clear, specific error explaining that, instead of crashing or silently failing.
 
 ### Auth & Security
@@ -227,7 +227,7 @@ This section walks through what a real person actually clicks through, from the 
 4. Verify / edit    → review extracted number(s) + date, correct inline if needed
 5. Save / export    → append the row to the active Excel workbook
                        (first save ever, or a new year, prompts for a workbook name)
-6. View history      → Export History page (all users) or download the active/
+6. View history      → Export History page (own exports) or download the active/
                         archived workbook from the Dashboard/Workbooks view
 ```
 
@@ -238,7 +238,7 @@ In more detail:
 3. **Upload.** The user picks whether the document is a Tax Invoice or a Delivery Challan, then drops in one file. From this point on, everything described in the Architecture section above happens automatically, with no further action needed from the user.
 4. **Verify / edit.** Once processing finishes, the user sees the extracted number and date. If either one looks wrong, or came back empty (`null`), they can type in the correct value directly.
 5. **Save / export.** Saving appends the verified row to the user's current Excel workbook. The very first time a user ever saves, or the first time in a new calendar year, the app asks them to name a new workbook before it can continue.
-6. **View history.** From here, a user can look at the shared Export History page (which shows every export by every user, as explained earlier), or go to the Dashboard/Workbooks view to download their own current or older workbooks.
+6. **View history.** From here, a user can look at their own Export History page, or go to the Dashboard/Workbooks view to download their own current or older workbooks.
 
 **Admin journey**
 ```
@@ -288,7 +288,7 @@ This applies to every `/api/documents/*` route, every `/api/documents/:id/chat/*
 | GET | `/` | Y | N | Lists the logged-in user's own documents. If a `?page=` query is given, it returns one page of results at a time (for the Documents page). If no `?page=` is given, it returns every document at once, plus a count of documents by type — this second shape is what the Dashboard uses to build its summary. |
 | GET | `/workbooks` | Y | N | Lists the logged-in user's own workbooks — both the currently active one and any archived ones — along with the name and year of whichever workbook is currently active. |
 | GET | `/workbook/download` | Y | N | Downloads a workbook file. It can be asked for by `?workbookId=` (a specific workbook), by `?year=` (that year's workbook for this user), or with no extra query at all, in which case it downloads whatever workbook is currently active. |
-| GET | `/export-history` | Y | N | Returns every export ever made, by every user — this route is a deliberate exception to the usual "only your own data" rule, because it powers the shared, company-wide Export History page. |
+| GET | `/export-history` | Y | N | Returns the current user's own exports, newest first. |
 | GET | `/:id` | Y | N | Gets the full details of one document, as long as it belongs to the logged-in user. |
 | GET | `/:id/download` | Y | N | Downloads the original file that was uploaded for this document. |
 | POST | `/:id/reprocess` | Y | N | Re-runs OCR and AI extraction on this document again, starting from the original file, which is still safely stored in GridFS. |

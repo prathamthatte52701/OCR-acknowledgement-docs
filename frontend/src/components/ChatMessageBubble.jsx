@@ -1,8 +1,9 @@
 import { useState } from 'react'
+import { formatISTTime } from '../utils/formatDate'
 
 function formatTimestamp(dateStr) {
   if (!dateStr) return ''
-  return new Date(dateStr).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+  return formatISTTime(dateStr)
 }
 
 function RatingBar({ messageId, onRate }) {

@@ -452,12 +452,6 @@ router.get('/workbooks', async (req, res) => {
 
 // GET /api/documents/workbook/download?year=YYYY - download a workbook file.
 // Defaults to the active workbook when no year is given (dashboard Export).
-// The year/default lookups stay scoped to req.userId - workbooks are per-user,
-// never shared there. The workbookId lookup is the one deliberate exception:
-// it backs the Export History page, which by design shows and lets any user
-// download every user's workbooks - see that route below - so this branch
-// intentionally does NOT filter by req.userId, and resolves the physical file
-// using the workbook's own owner (wb.userId), not the requester.
 router.get('/workbook/download', async (req, res) => {
   try {
     const Workbook = require('../models/Workbook')
@@ -467,7 +461,7 @@ router.get('/workbook/download', async (req, res) => {
       if (!isValidObjectId(req.query.workbookId)) {
         return res.status(400).json({ error: 'Invalid workbook id.' })
       }
-      const wb = await Workbook.findOne({ _id: req.query.workbookId })
+      const wb = await Workbook.findOne({ _id: req.query.workbookId, userId: req.userId })
       if (!wb) return res.status(404).json({ error: 'Workbook not found.' })
       filename = wb.filename
       ownerUserId = wb.userId
@@ -496,15 +490,12 @@ router.get('/workbook/download', async (req, res) => {
   }
 })
 
-// GET /api/documents/export-history - every export ever made, by any user,
-// newest first, with enough info to know which workbook file it went into.
-// Deliberate exception to this app's usual per-user isolation (Document,
-// Workbook, chat, etc. all stay scoped to req.userId as before) - this page
-// is intentionally a shared, all-users view, so it does NOT filter by userId.
+// GET /api/documents/export-history - this user's own exports, newest first,
+// with enough info to know which workbook file each one went into.
 // Registered before /:id so "export-history" isn't read as an id.
 router.get('/export-history', async (req, res) => {
   try {
-    const exports = await ExportedRow.find({})
+    const exports = await ExportedRow.find({ userId: req.userId })
       .sort({ exportedAt: -1 })
       .populate('workbookId', 'filename year')
       .lean()
