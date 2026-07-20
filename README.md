@@ -14,6 +14,7 @@
 - [API Reference](#api-reference)
 - [Setup / How to Run](#setup--how-to-run)
 - [Folder Structure](#folder-structure)
+- [Troubleshooting for Office Users](#troubleshooting-for-office-users)
 
 ---
 
@@ -42,6 +43,8 @@ This section lists what the app can actually do today, grouped by area.
 
 ### OCR & Extraction
 - Users can upload a JPG, JPEG, PNG, or PDF file. The file must be 5 MB or smaller, and a PDF can have at most 4 pages. Before uploading, the user must pick a document type: Tax Invoice or Delivery Challan. This choice matters because each document type has different fields to extract.
+- File validation errors are specific, not generic — the app tells the user exactly what went wrong (for example, "File size must be 5 MB or less" versus "File content does not match the selected file type") instead of a single catch-all error message.
+- Bulk Upload lets a user upload up to 5 files in one go, each with its own document type picked individually. The files are still processed strictly one at a time through the same single-slot queue described below — never in parallel — to keep server load safe. The user sees live, per-file progress (waiting / processing / done / failed) as each one finishes.
 - Only the top ~28% of the page (the header area) is sent through OCR. The number and date always live in this area on both document types. Everything else on the page — the item table, GST numbers, stamps, and signatures — is deliberately ignored. Skipping that extra content makes OCR faster and far more accurate, because there is less noisy text for it to get confused by.
 - The actual OCR engine is Tesseract.js. It runs inside its own separate child process (a second, isolated program that the main server starts and talks to), not inside the main server itself. This matters a lot: if OCR ever crashes, hangs, or gets stuck on a strange file, only that one child process dies — the main server and every other user's request keep working normally. There is also a timeout on this process, so a stuck OCR job can never hang forever.
 - PDFs are handled in two different ways depending on what kind of PDF they are:
@@ -50,15 +53,18 @@ This section lists what the app can actually do today, grouped by area.
 - The actual extraction of the number and date is done by an AI model (Groq, using the `llama-3.3-70b-versatile` model). The AI is given a strict instruction: return only the fields as clean JSON, and if it is not confident about a value, return `null` instead of guessing. It is also told to ignore anything handwritten, any rubber stamps, and any signatures — only printed form text counts.
 - The app can be configured with more than one Groq API key at once. If one key hits a rate limit or stops working, the app automatically tries the next key in the list. This is called a round-robin pool with failover, and it means one bad or overloaded key does not stop the whole app from working.
 - Every extracted date is converted into one consistent format: `DD/MM/YYYY`. If a date cannot be understood confidently, it is stored as `null` so a human can fill it in later — the app never invents a date.
+- Tax Invoice numbers get one extra safety check on top of what the AI returns: a real Tax Invoice number always starts with the letter "G". This is enforced in code, not just hoped for via the AI prompt — if the AI returns a value that doesn't start with "G", that value is not silently trusted. Instead it is flagged as low-confidence, the same way any other uncertain field is, so the user sees the warning and can manually verify it before saving.
 - Only one OCR job runs at a time, through a simple one-slot queue. This protects the server from running out of memory if many big files come in at once. The queue is also fair: it takes turns between different users instead of always processing whoever uploaded first, so one user uploading a big batch of files cannot block everyone else from getting their single document processed.
 - If the server restarts while a document is still mid-processing, that document is automatically picked back up and re-queued when the server comes back online. Nothing gets silently lost.
 
 ### Document Management
 - The Dashboard shows every document a user has uploaded, plus quick counts by document type. The separate Documents page shows the same list but with pagination (loading documents a page at a time instead of all at once), which matters once a user has a lot of documents.
+- The Dashboard has a search bar for finding a document quickly: by document number (a partial match — typing part of the number is enough) or by date (picked with a native date picker). Searching redirects to the Documents page with the results filtered and still paginated, the same as browsing normally.
 - Each document has its own detail page. It shows the extracted fields, a confidence indicator for each one, and lets the user preview or download the original file they uploaded.
 - Any extracted field can be corrected by hand. The date field is checked for the right format before it is accepted. Every correction is written to a `Correction` record, so there is always a history of what was changed and when.
 - A document can be reprocessed. This re-runs the whole OCR-plus-AI pipeline again from the original file that is still stored — useful if the first attempt got a field wrong or missed something.
 - Deleting a document is a "soft delete": the document is marked as deleted and hidden from view, along with its stored file, rather than being destroyed outright.
+- Delete always asks for confirmation first, in a popup ("Delete this document? This cannot be undone."), specifically to prevent accidental deletion from a stray click.
 
 ### Excel Export & Workbooks
 - Verified rows go into an Excel workbook that is scoped to one user and one year. Inside that workbook, each month gets its own worksheet, and that worksheet is created automatically the first time a row for that month is saved.
@@ -82,7 +88,7 @@ This section lists what the app can actually do today, grouped by area.
 
 ### Admin Panel
 - The admin panel is a completely separate app (the `admin/` folder), with its own login page. Access is gated by checking that the logged-in account has `role: 'admin'` — and importantly, this check is done fresh against the database on every single request, not just trusted from whatever the login token happens to claim. This stops someone from tampering with their token to fake admin access.
-- **Users** — admins can see every user account (with pagination), edit a user's username, email, or role, and delete a user entirely. Deleting a user is a cascade delete: it also removes that user's documents, their stored files, their correction history, their chat history, their workbooks, their exported-row records, and their settings — nothing is left behind as orphaned data.
+- **Users** — admins can see every user account (with pagination), edit a user's username, email, or role, and delete a user entirely. Deleting a user is a cascade delete: it also removes that user's documents, their stored files, their correction history, their chat history, their workbooks, their exported-row records, and their settings — nothing is left behind as orphaned data. As with document deletion, a confirmation popup is always shown first, to prevent an accidental delete.
 - **Documents** — admins can see every document from every user (with the owner's name attached), and can correct any document's fields, the same way a regular user can correct their own.
 - **Workbooks** — admins can view and download any user's Excel workbooks, not just their own.
 - **Logs** — a paginated, filterable audit log. It can be filtered by the type of action (like login, signup, password change, document export, document deletion, or an admin action) and/or by which user it relates to.
@@ -458,3 +464,76 @@ OCR project AJ/
 ```
 
 A quick note on how to read this tree: `backend/` is the one shared brain of the app — it is the only place that ever talks directly to MongoDB, GridFS, or Groq. `frontend/` and `admin/` are two separate faces on top of that same brain, one for regular users and one for admins, and neither of them can reach the database or any external service directly — everything they do goes through the backend's API first.
+
+## Troubleshooting for Office Users
+
+The app itself has a built-in **Help** page (`/help` in the regular frontend, linked from the navbar) with the exact same content as below, in an expandable/collapsible list. This section is that same content, reproduced here so it is also available outside the app itself.
+
+**I uploaded a file and got an error like "File content does not match" or "File size must be 5 MB or less"**
+- This app only accepts PDF, JPG, JPEG, or PNG files, and each file must be smaller than 5 MB.
+- Check what type your file is and how big it is (right-click the file → Properties on Windows, or Get Info on Mac).
+- If it is a different file type (like Word or Excel), save/export it as a PDF first, then upload the PDF.
+- If it is too big, ask whoever scanned it to save it at a lower quality, or take a normal photo instead of a very high-resolution scan.
+
+**I forgot to check which "Document Type" was selected before uploading**
+- Before every upload, look at the "Document Type" buttons (Tax Invoice / Delivery Challan) above the upload box.
+- The app always has one selected by default - if you upload without checking, it may pick the wrong one for your document.
+- If you notice after uploading that the wrong type was used, open the document and click "Reprocess" - but first you need to fix this from the very start, so it is best to just double check the Document Type before every upload.
+- For Bulk Upload, each file has its own dropdown next to it - check every file's dropdown before clicking "Upload All".
+
+**The extracted Number or Date is wrong, or empty (looks like a dash "-")**
+- This happens when the scan or photo was blurry, dark, or the number was partly covered by a stamp.
+- Open the document and look for a red circle icon next to the field - that means the app itself is not confident about that value and wants you to double-check it.
+- Click "Edit" on that field and type in the correct value by looking at the original document (you can view/download the original file from the same page).
+- If many fields look wrong, try "Reprocess" first - it re-reads the file from scratch and sometimes gets a better result.
+- For best results next time: use good lighting, hold the camera steady, and make sure the top of the page (where the number and date are) is not covered by anything.
+
+**I clicked Save/Export and nothing seems to have happened**
+- "Save" only works once a document has finished processing (status shows "Processed"). If it still says "Uploaded" or "Processing", wait a bit and try again.
+- If this is your very first time saving, the app will ask you to type a name for a new Excel file - type any name and click OK.
+- If nothing downloads when you click "Export" on the Dashboard, check your browser's download folder or download bar - some browsers save the file quietly without a popup.
+- If you see a red message instead of a download, read the message - it tells you exactly what went wrong (for example, "no active Excel workbook yet").
+
+**I can't log in - is it a wrong password, or something else?**
+- If the page says "Invalid email or password", either your email or password is wrong. Check for typos, and make sure Caps Lock is off.
+- If you genuinely forgot your password, click "Forgot password?" on the login page and follow the steps there - you will need to enter your username and email correctly.
+- If you see a message about "too many login attempts", wait about 15 minutes before trying again - this is a safety feature, not a bug.
+
+**I got suddenly logged out while using the app**
+- Your login automatically expires after some time for security. This is normal and not an error.
+- Simply log in again with your email and password - you will be taken back to the same page you were on.
+- Nothing you already saved or uploaded is lost when this happens.
+
+**The page is blank, frozen, or shows "Server is currently unreachable"**
+- This means the app cannot reach the server right now - usually a temporary internet or server issue, not something wrong with your computer.
+- Wait about 10-30 seconds - the app checks the connection automatically and this message will disappear on its own once the server is back.
+- If it does not go away after a few minutes, refresh the page (F5) or contact your admin/IT contact.
+
+**My document has been stuck on "Processing..." for a long time**
+- Processing usually takes a few seconds to about a minute per document, especially if many people are uploading files at the same time - the app processes one file at a time to stay reliable.
+- If the app tells you it is "taking longer than expected", it may still finish in the background - go check the "My Documents" page after a minute or two.
+- If it still says "Uploaded" or "Processing" after several minutes, use the "Reprocess" button on the document's page to try again.
+
+**I searched for a document but it did not show up**
+- Number search: it looks for that text anywhere inside the number, so a partial number is fine (for example, searching "7704827" will find "G0027704827").
+- Date search: this one needs to match EXACTLY, in the format DD/MM/YYYY (for example 01/07/2026, with the leading zero and forward slashes). Typing it any other way (like 1-7-2026 or July 1) will not find it.
+- Remember, you can only search your own documents, not documents uploaded by other people.
+- Click "Clear Search" to see your full document list again.
+
+**I accidentally clicked Delete on a document**
+- The app always asks "Delete this document? This cannot be undone." before actually deleting anything - if you see that popup, click Cancel and you are safe.
+- If you already confirmed the delete, it genuinely cannot be undone by you from within the app.
+- If this was important data, contact your admin - they may be able to help depending on how recently it happened.
+
+**I saved a document but I don't see it in my Excel file**
+- Your Excel workbook has a separate sheet/tab for each month, and it is based on the DATE PRINTED ON THE DOCUMENT - not the day you clicked Save.
+- For example, if a document is dated 15/06/2026 and you save it in July, it goes into the "June" sheet, not "July".
+- Open the Excel file and check the sheet tabs at the bottom of the window for the month matching the document's own date.
+- If a document's Date field itself is wrong, fix it first (Edit) - otherwise it will keep landing on the wrong month's sheet.
+
+**Bulk Upload won't let me add more files**
+- Bulk Upload accepts a maximum of 5 files at once.
+- If you have more than 5 documents, upload the first 5, wait for that batch to finish, then click "Start New Batch" and upload the rest.
+- Each file in Bulk Upload still needs the right Document Type selected in its own dropdown, and still follows the same file type/size rules as a single upload.
+
+Still stuck after trying the steps above? Contact your admin or IT contact for help.
