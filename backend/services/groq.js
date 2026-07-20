@@ -152,6 +152,21 @@ function dateConfidence(rawDate, normalizedDate) {
   return normalizedDate ? 100 : 30
 }
 
+// Code-level safety net on top of the AI, not a replacement for it - a real
+// TAX INVOICE No. always starts with "G" (e.g. G0027704827, confirmed across
+// every sample). If Groq occasionally returns something that doesn't match
+// this (OCR noise, a misread neighboring field, etc.), that value is never
+// silently accepted or auto-corrected - it's just downgraded below the
+// frontend's low-confidence threshold (80) so the red flag shows and the
+// user verifies it via the existing Edit flow. Delivery Challan numbers have
+// no fixed prefix and are unaffected.
+const TAX_INVOICE_NO_PREFIX_RE = /^G/
+function taxInvoiceNoConfidence(value) {
+  const base = numberConfidence(value)
+  if (base === 0) return 0
+  return TAX_INVOICE_NO_PREFIX_RE.test(value.trim()) ? base : 20
+}
+
 async function extractHeader(documentType, headerText) {
   if (!headerText || !headerText.trim()) {
     return documentType === 'Tax Invoice'
@@ -179,7 +194,7 @@ async function extractHeader(documentType, headerText) {
       taxInvoiceNo: parsed.taxInvoiceNo || null,
       referenceNo: parsed.referenceNo || null,
       date,
-      taxInvoiceNoConfidence: numberConfidence(parsed.taxInvoiceNo),
+      taxInvoiceNoConfidence: taxInvoiceNoConfidence(parsed.taxInvoiceNo),
       referenceNoConfidence: numberConfidence(parsed.referenceNo),
       dateConfidence: dateConf,
     }
