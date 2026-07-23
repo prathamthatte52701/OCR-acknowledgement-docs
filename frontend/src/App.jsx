@@ -10,7 +10,6 @@ import Dashboard from './pages/Dashboard'
 import UploadPage from './pages/UploadPage'
 import DocumentsPage from './pages/DocumentsPage'
 import DocumentDetailPage from './pages/DocumentDetailPage'
-import DocumentChatPage from './pages/DocumentChatPage'
 import ExportHistoryPage from './pages/ExportHistoryPage'
 import ProfilePage from './pages/ProfilePage'
 import HelpPage from './pages/HelpPage'
@@ -32,7 +31,6 @@ export default function App() {
               <Route path="/upload" element={<UploadPage />} />
               <Route path="/documents" element={<DocumentsPage />} />
               <Route path="/documents/:id" element={<DocumentDetailPage />} />
-              <Route path="/documents/:id/chat" element={<DocumentChatPage />} />
               <Route path="/export-history" element={<ExportHistoryPage />} />
               <Route path="/profile" element={<ProfilePage />} />
               <Route path="/help" element={<HelpPage />} />

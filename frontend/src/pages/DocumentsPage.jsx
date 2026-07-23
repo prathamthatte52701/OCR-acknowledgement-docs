@@ -43,12 +43,14 @@ function DocumentsError({ message, onRetry }) {
 }
 
 const PAGE_SIZE = 30
+const DOCUMENT_TYPES = ['Tax Invoice', 'Delivery Challan']
 
 export default function DocumentsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const numberQuery = searchParams.get('number') || ''
   const dateQuery = searchParams.get('date') || ''
   const isSearching = Boolean(numberQuery || dateQuery)
+  const selectedType = DOCUMENT_TYPES.includes(searchParams.get('type')) ? searchParams.get('type') : DOCUMENT_TYPES[0]
 
   const [documents, setDocuments] = useState([])
   const [loading, setLoading] = useState(true)
@@ -65,6 +67,7 @@ export default function DocumentsPage() {
         params: {
           page: pageToLoad,
           limit: PAGE_SIZE,
+          documentType: selectedType,
           ...(numberQuery && { number: numberQuery }),
           ...(dateQuery && { date: dateQuery }),
         },
@@ -80,18 +83,26 @@ export default function DocumentsPage() {
   }
 
   function clearSearch() {
-    setSearchParams({})
+    const next = new URLSearchParams()
+    if (searchParams.get('type')) next.set('type', searchParams.get('type'))
+    setSearchParams(next)
   }
 
-  // A new/changed search should always land on page 1. Guarding on a ref
-  // (rather than a second effect keyed only on the search params) avoids an
-  // extra wasted fetch with the stale page number in the common case where
-  // page is already 1 when the search changes.
-  const prevSearchKeyRef = useRef(`${numberQuery}|${dateQuery}`)
+  function selectType(type) {
+    const next = new URLSearchParams(searchParams)
+    next.set('type', type)
+    setSearchParams(next)
+  }
+
+  // A new/changed search or group tab should always land on page 1. Guarding
+  // on a ref (rather than a second effect keyed only on the search params)
+  // avoids an extra wasted fetch with the stale page number in the common
+  // case where page is already 1 when the search/tab changes.
+  const prevSearchKeyRef = useRef(`${numberQuery}|${dateQuery}|${selectedType}`)
 
   useEffect(() => {
     let cancelled = false
-    const searchKey = `${numberQuery}|${dateQuery}`
+    const searchKey = `${numberQuery}|${dateQuery}|${selectedType}`
     if (searchKey !== prevSearchKeyRef.current) {
       prevSearchKeyRef.current = searchKey
       if (page !== 1) {
@@ -107,6 +118,7 @@ export default function DocumentsPage() {
       params: {
         page,
         limit: PAGE_SIZE,
+        documentType: selectedType,
         ...(numberQuery && { number: numberQuery }),
         ...(dateQuery && { date: dateQuery }),
       },
@@ -125,7 +137,7 @@ export default function DocumentsPage() {
       })
 
     return () => { cancelled = true }
-  }, [page, numberQuery, dateQuery])
+  }, [page, numberQuery, dateQuery, selectedType])
 
   return (
     <div className="relative min-h-full overflow-hidden bg-[#020817]">
@@ -182,6 +194,23 @@ export default function DocumentsPage() {
               Upload New
             </Link>
           </div>
+        </div>
+
+        <div className="mb-6 flex gap-2">
+          {DOCUMENT_TYPES.map((type) => (
+            <button
+              key={type}
+              type="button"
+              onClick={() => selectType(type)}
+              className={`flex-1 rounded-2xl border px-4 py-2.5 text-[13.6px] font-bold transition-all sm:flex-none ${
+                selectedType === type
+                  ? 'border-blue-300/50 bg-blue-500/15 text-blue-100'
+                  : 'border-white/10 bg-white/[0.03] text-slate-400 hover:border-blue-300/25 hover:text-slate-200'
+              }`}
+            >
+              {type}
+            </button>
+          ))}
         </div>
 
         {loading ? (

@@ -204,14 +204,6 @@ export default function DocumentDetailPage() {
 
       <div className="flex flex-wrap gap-2 mb-6">
         {doc.uploadStatus === 'processed' && (
-          <Link
-            to={`/documents/${id}/chat`}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-[14.7px] font-medium rounded-lg transition-colors no-underline"
-          >
-            Chat with Document
-          </Link>
-        )}
-        {doc.uploadStatus === 'processed' && (
           <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-[14.7px] font-medium rounded-lg transition-colors">
             {saving ? 'Saving...' : 'Save to Excel'}
           </button>

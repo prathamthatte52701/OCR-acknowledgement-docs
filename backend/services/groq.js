@@ -207,30 +207,7 @@ async function extractHeader(documentType, headerText) {
   }
 }
 
-const CHAT_SYSTEM = `You are a helpful assistant answering questions about a single scanned document. Only use the document details given below - never invent information. If the answer isn't in the given details, say so plainly.`
-
-async function answerQuestion(question, docContext) {
-  const { documentType, taxInvoiceNo, referenceNo, number, date } = docContext
-
-  const contextBlock = documentType === 'Tax Invoice'
-    ? `Document Type: Tax Invoice\nTAX INVOICE No.: ${taxInvoiceNo ?? 'Not available'}\nReference No.: ${referenceNo ?? 'Not available'}\nDate: ${date ?? 'Not available'}`
-    : `Document Type: Delivery Challan\nDelivery Challan No.: ${number ?? 'Not available'}\nDate: ${date ?? 'Not available'}`
-
-  const response = await callGroqWithFailover(client => client.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
-    messages: [
-      { role: 'system', content: CHAT_SYSTEM + '\n\n' + contextBlock },
-      { role: 'user', content: question },
-    ],
-    temperature: 0.2,
-    max_tokens: 500,
-  }))
-
-  return response.choices[0].message.content
-}
-
 module.exports = {
   extractHeader,
   normalizeDateToDDMMYYYY,
-  answerQuestion,
 }

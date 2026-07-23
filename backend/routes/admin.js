@@ -7,8 +7,6 @@ const Correction = require('../models/Correction')
 const Workbook = require('../models/Workbook')
 const ExportedRow = require('../models/ExportedRow')
 const Settings = require('../models/Settings')
-const ChatMessage = require('../models/ChatMessage')
-const ChatFeedback = require('../models/ChatFeedback')
 const AuditLog = require('../models/AuditLog')
 const { deleteFile } = require('../services/gridfs')
 const excel = require('../services/excel')
@@ -127,9 +125,9 @@ router.patch('/users/:id', async (req, res) => {
 })
 
 // DELETE /api/admin/users/:id - cascade delete: every document (+ its GridFS
-// file, corrections, chat history), every workbook (+ its .xlsx file on
-// disk), every exported-row record, and the excel-state settings row. A
-// clean removal rather than an orphaned trail, since this is an admin tool.
+// file, corrections), every workbook (+ its .xlsx file on disk), every
+// exported-row record, and the excel-state settings row. A clean removal
+// rather than an orphaned trail, since this is an admin tool.
 router.delete('/users/:id', async (req, res) => {
   try {
     if (req.params.id === req.userId) {
@@ -150,8 +148,6 @@ router.delete('/users/:id', async (req, res) => {
     }))
 
     await Correction.deleteMany({ documentId: { $in: docIds } })
-    await ChatFeedback.deleteMany({ documentId: { $in: docIds } })
-    await ChatMessage.deleteMany({ documentId: { $in: docIds } })
     await Document.deleteMany({ userId: user._id })
     await ExportedRow.deleteMany({ userId: user._id })
 

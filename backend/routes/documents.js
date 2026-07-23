@@ -386,10 +386,15 @@ function escapeRegex(str) {
 // referenceNo for Tax Invoice, number for Delivery Challan) - matching all
 // three lets one search box work regardless of document type. ?date= is an
 // exact match, since it comes from a date picker rather than free text.
+// ?documentType= scopes the whole list to just that type (My Documents'
+// per-type grouped sections) - ignored if not one of the two known types.
 router.get('/', async (req, res) => {
   try {
     const filter = { userId: req.userId, isDeleted: { $ne: true } }
 
+    if (DOCUMENT_TYPES.includes(req.query.documentType)) {
+      filter.documentType = req.query.documentType
+    }
     if (req.query.number && req.query.number.trim()) {
       const numberRegex = new RegExp(escapeRegex(req.query.number.trim()), 'i')
       filter.$or = [

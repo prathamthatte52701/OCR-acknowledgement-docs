@@ -9,7 +9,6 @@ const features = [
   { icon: 'UP', title: 'Upload', desc: 'Upload acknowledgement documents in JPG, JPEG, PNG, or PDF.' },
   { icon: 'OC', title: 'Header OCR', desc: 'Crops to the top header section of the page and extracts text from just that region for maximum accuracy.' },
   { icon: 'AI', title: 'AI Analysis', desc: 'Identify the document number and date automatically - Tax Invoice or Delivery Challan.' },
-  { icon: 'CH', title: 'Chat', desc: 'Ask questions and get answers about your documents.' },
   { icon: 'ED', title: 'Edit', desc: 'Review and correct extracted number/date instantly.' },
   { icon: 'XL', title: 'Excel Export', desc: 'Export verified rows into a running Excel workbook with one click.' },
 ]
@@ -117,7 +116,7 @@ function HeroIllustration() {
 function RecentDocumentRow({ doc }) {
   return (
     <Link
-      to={doc.uploadStatus === 'processed' ? `/documents/${doc._id}/chat` : `/documents/${doc._id}`}
+      to={`/documents/${doc._id}`}
       className="group grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.035] px-4 py-3 no-underline transition-all hover:border-blue-300/25 hover:bg-blue-500/[0.055]"
     >
       <span className="grid h-11 w-11 place-items-center rounded-2xl border border-blue-300/15 bg-blue-500/10 text-[12.6px] font-black text-blue-200">
@@ -198,62 +197,6 @@ function FeatureCard({ feature, index }) {
   )
 }
 
-function FeedbackAnalyticsPanel({ feedback }) {
-  const { avgRating, totalFeedback, top3 } = feedback
-
-  return (
-    <div className="rounded-[28px] border border-blue-300/12 bg-slate-900/68 p-5 shadow-2xl shadow-slate-950/30 backdrop-blur-xl sm:p-6">
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-black tracking-tight text-white">AI Quality Analytics</h2>
-          <p className="mt-1 text-[14.7px] text-slate-500">Based on user ratings for AI chat responses</p>
-        </div>
-        <span className="shrink-0 rounded-full border border-amber-300/20 bg-amber-400/10 px-3 py-1 text-[11.6px] font-bold uppercase tracking-[0.14em] text-amber-200">
-          {totalFeedback} ratings
-        </span>
-      </div>
-
-      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-2">
-        <div className="rounded-2xl border border-amber-300/15 bg-amber-500/[0.07] p-4 text-center">
-          <p className="text-3xl font-black text-amber-300">{avgRating > 0 ? avgRating.toFixed(1) : '—'}</p>
-          <p className="mt-1 text-[12.6px] font-semibold text-slate-400">Avg Rating / 10</p>
-        </div>
-        <div className="rounded-2xl border border-blue-300/15 bg-blue-500/[0.07] p-4 text-center">
-          <p className="text-3xl font-black text-blue-300">{totalFeedback}</p>
-          <p className="mt-1 text-[12.6px] font-semibold text-slate-400">Total Feedback</p>
-        </div>
-      </div>
-
-      {top3.length > 0 && (
-        <>
-          <p className="mb-3 text-[12.6px] font-bold uppercase tracking-[0.16em] text-slate-500">Top 3 Highest-Rated</p>
-          <div className="space-y-2">
-            {top3.map((item, i) => (
-              <div key={item._id || i} className="flex items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.035] px-4 py-3">
-                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-amber-500/15 text-[12.6px] font-black text-amber-300">
-                  #{i + 1}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[14.7px] font-bold text-white">{item.autoName || 'Unknown'}</p>
-                  <p className="truncate text-[12.6px] text-slate-500">{item.consignor?.name || item.documentType || ''}</p>
-                </div>
-                <span className="shrink-0 text-[14.7px] font-black text-amber-300">{item.avgRating}/10</span>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      {totalFeedback === 0 && (
-        <div className="rounded-2xl border border-dashed border-blue-300/14 bg-white/[0.025] px-5 py-8 text-center">
-          <p className="text-[14.7px] font-bold text-slate-300">No ratings yet.</p>
-          <p className="mt-2 text-[14.7px] text-slate-500">Rate AI responses in the chat to see analytics here.</p>
-        </div>
-      )}
-    </div>
-  )
-}
-
 // Native <input type="date"> gives back YYYY-MM-DD; the app stores/searches
 // dates as DD/MM/YYYY everywhere else, so convert before it ever leaves this form.
 function isoDateToDDMMYYYY(iso) {
@@ -315,7 +258,6 @@ export default function Dashboard() {
   const [stats, setStats] = useState({ total: 0, processed: 0, failed: 0, processedToday: 0, taxInvoice: 0, deliveryChallan: 0 })
   const [recentDocs, setRecentDocs] = useState([])
   const [training, setTraining] = useState({ trainedCount: 0, correctedCount: 0 })
-  const [feedback, setFeedback] = useState({ avgRating: 0, totalFeedback: 0, top3: [] })
   const [exporting, setExporting] = useState(false)
   const [loading, setLoading] = useState(true)
 
@@ -353,12 +295,7 @@ export default function Dashboard() {
       setTraining(res.data || { trainedCount: 0, correctedCount: 0 })
     }).catch(() => {})
 
-    const feedbackReq = api.get('/documents/feedback-stats').then(res => {
-      if (cancelled) return
-      setFeedback(res.data || { avgRating: 0, totalFeedback: 0, top3: [] })
-    }).catch(() => {})
-
-    Promise.allSettled([docsReq, trainingReq, feedbackReq]).finally(() => {
+    Promise.allSettled([docsReq, trainingReq]).finally(() => {
       if (!cancelled) setLoading(false)
     })
 
@@ -425,7 +362,7 @@ export default function Dashboard() {
           <>
             <section className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <StatCard icon="TD" label="Total Documents" value={stats.total} helper="Acknowledgements in workspace" color="blue" />
-              <StatCard icon="OK" label="Processed" value={stats.processed} helper="Ready for review and chat" color="green" />
+              <StatCard icon="OK" label="Processed" value={stats.processed} helper="Ready for review" color="green" />
               <StatCard icon="ER" label="Failed" value={stats.failed} helper="Needs reprocess or review" color="red" />
               <StatCard icon="24" label="Processed Today" value={stats.processedToday} helper="Completed in today's run" color="violet" />
               <StatCard icon="TI" label="Tax Invoice" value={stats.taxInvoice} helper="Documents of this type" color="amber" />
@@ -459,10 +396,6 @@ export default function Dashboard() {
               </div>
 
               <QualityPanel stats={stats} training={training} />
-            </section>
-
-            <section className="mt-6">
-              <FeedbackAnalyticsPanel feedback={feedback} />
             </section>
           </>
         )}

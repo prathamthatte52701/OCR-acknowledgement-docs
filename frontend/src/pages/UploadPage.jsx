@@ -6,6 +6,14 @@ import challanRouteVisual from '../assets/transport-bill-route-visual.png'
 
 const DOCUMENT_TYPES = ['Tax Invoice', 'Delivery Challan']
 const MAX_BULK_FILES = 5
+const RESULTS_PAGE_SIZE = 5
+
+function displayNumber(f) {
+  if (f.documentType === 'Tax Invoice') {
+    return [f.taxInvoiceNo, f.referenceNo].filter(Boolean).join(' / ') || '-'
+  }
+  return f.number || '-'
+}
 
 function LogisticsUploadIllustration() {
   return (
@@ -96,6 +104,7 @@ export default function UploadPage() {
   const [bulkFiles, setBulkFiles] = useState([]) // [{ file, documentType, status, error, docId }]
   const [bulkError, setBulkError] = useState('')
   const [bulkSubmitting, setBulkSubmitting] = useState(false)
+  const [resultsPage, setResultsPage] = useState(1)
   const bulkPollRef = useRef(null)
   // setInterval's closure would otherwise see bulkFiles as it was when the
   // interval was created - this ref is kept in sync so each tick reads the
@@ -239,7 +248,16 @@ export default function UploadPage() {
         try {
           const res = await api.get(`/documents/${f.docId}`)
           const doc = res.data?.document
-          if (doc?.uploadStatus === 'processed') return { docId: f.docId, status: 'done' }
+          if (doc?.uploadStatus === 'processed') {
+            return {
+              docId: f.docId,
+              status: 'done',
+              taxInvoiceNo: doc.taxInvoiceNo,
+              referenceNo: doc.referenceNo,
+              number: doc.number,
+              date: doc.date,
+            }
+          }
           if (doc?.uploadStatus === 'failed') return { docId: f.docId, status: 'failed', error: doc.processingError || 'Processing failed.' }
           if (attempts > 90) return { docId: f.docId, status: 'failed', error: 'This is taking longer than expected. Check My Documents shortly.' }
           return null
@@ -253,7 +271,16 @@ export default function UploadPage() {
       if (changed.length > 0) {
         setBulkFiles((prev) => prev.map((f) => {
           const u = changed.find((c) => c.docId === f.docId)
-          return u ? { ...f, status: u.status, error: u.error || '' } : f
+          if (!u) return f
+          return {
+            ...f,
+            status: u.status,
+            error: u.error || '',
+            taxInvoiceNo: u.taxInvoiceNo,
+            referenceNo: u.referenceNo,
+            number: u.number,
+            date: u.date,
+          }
         }))
       }
     }, 2000)
@@ -299,12 +326,19 @@ export default function UploadPage() {
     setBulkFiles([])
     setBulkError('')
     setBulkSubmitting(false)
+    setResultsPage(1)
   }
 
   const bulkDoneCount = bulkFiles.filter((f) => f.status === 'done').length
   const bulkFailedCount = bulkFiles.filter((f) => f.status === 'failed').length
   const bulkTotal = bulkFiles.length
   const bulkAllSettled = bulkTotal > 0 && bulkDoneCount + bulkFailedCount === bulkTotal
+
+  const resultsTotalPages = Math.max(1, Math.ceil(bulkFiles.length / RESULTS_PAGE_SIZE))
+  const resultsPageItems = bulkFiles.slice(
+    (resultsPage - 1) * RESULTS_PAGE_SIZE,
+    resultsPage * RESULTS_PAGE_SIZE
+  )
 
   return (
     <div className="relative min-h-full overflow-hidden bg-[#020817]">
@@ -355,25 +389,32 @@ export default function UploadPage() {
 
           {mode === 'bulk' ? (
             bulkAllSettled ? (
-              <div className="flex min-h-[460px] flex-col items-center justify-center gap-5 rounded-[26px] border border-blue-300/12 bg-slate-950/34 px-5 py-14 text-center">
-                <div
-                  className={`grid h-20 w-20 place-items-center rounded-full border text-[13.6px] font-black shadow-[0_0_45px_rgba(16,185,129,0.18)] ${
-                    bulkFailedCount === 0
-                      ? 'border-emerald-300/25 bg-emerald-400/15 text-emerald-200'
-                      : 'border-amber-300/25 bg-amber-400/15 text-amber-200'
-                  }`}
-                >
-                  {bulkDoneCount}/{bulkTotal}
+              <div className="flex min-h-[460px] flex-col gap-5 rounded-[26px] border border-blue-300/12 bg-slate-950/34 px-5 py-8">
+                <div className="flex flex-col items-center gap-4 text-center">
+                  <div
+                    className={`grid h-20 w-20 place-items-center rounded-full border text-[13.6px] font-black shadow-[0_0_45px_rgba(16,185,129,0.18)] ${
+                      bulkFailedCount === 0
+                        ? 'border-emerald-300/25 bg-emerald-400/15 text-emerald-200'
+                        : 'border-amber-300/25 bg-amber-400/15 text-amber-200'
+                    }`}
+                  >
+                    {bulkDoneCount}/{bulkTotal}
+                  </div>
+                  <p className="text-xl font-black text-white">View All Results</p>
+                  <p className="text-[14.7px] text-slate-400">
+                    {bulkFailedCount === 0
+                      ? `${bulkDoneCount}/${bulkTotal} processed successfully`
+                      : `${bulkDoneCount}/${bulkTotal} processed, ${bulkFailedCount} failed`}
+                  </p>
                 </div>
-                <p className="text-xl font-black text-white">
-                  {bulkFailedCount === 0
-                    ? `${bulkDoneCount}/${bulkTotal} processed successfully`
-                    : `${bulkDoneCount}/${bulkTotal} processed, ${bulkFailedCount} failed - see below`}
-                </p>
+
                 <div className="w-full space-y-2 text-left">
-                  {bulkFiles.map((f, i) => (
-                    <div key={i} className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5">
-                      <span className="min-w-0 truncate text-[13.6px] text-slate-300">{f.file.name}</span>
+                  {resultsPageItems.map((f, i) => (
+                    <div key={i} className="grid grid-cols-[1fr_auto_auto_auto_auto] items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                      <span className="min-w-0 truncate text-[13.6px] text-slate-300" title={f.file.name}>{f.file.name}</span>
+                      <span className="shrink-0 text-[12.6px] text-slate-500">{f.documentType}</span>
+                      <span className="shrink-0 text-[12.6px] font-semibold text-slate-300">{displayNumber(f)}</span>
+                      <span className="shrink-0 text-[12.6px] font-semibold text-slate-300">{f.status === 'done' ? (f.date || '-') : '-'}</span>
                       {f.status === 'done' && f.docId ? (
                         <Link to={`/documents/${f.docId}`} className="shrink-0 text-[12.6px] font-bold text-emerald-300 no-underline hover:underline">
                           Review
@@ -384,9 +425,32 @@ export default function UploadPage() {
                     </div>
                   ))}
                 </div>
+
+                {resultsTotalPages > 1 && (
+                  <div className="flex items-center justify-center gap-4">
+                    <button
+                      onClick={() => setResultsPage((p) => Math.max(1, p - 1))}
+                      disabled={resultsPage <= 1}
+                      className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/[0.045] px-5 py-3 text-[14.7px] font-bold text-slate-200 transition-colors hover:border-blue-300/30 hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10 disabled:hover:bg-white/[0.045]"
+                    >
+                      Previous
+                    </button>
+                    <span className="text-[14.7px] font-bold text-slate-400">
+                      Page {resultsPage} of {resultsTotalPages}
+                    </span>
+                    <button
+                      onClick={() => setResultsPage((p) => Math.min(resultsTotalPages, p + 1))}
+                      disabled={resultsPage >= resultsTotalPages}
+                      className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/[0.045] px-5 py-3 text-[14.7px] font-bold text-slate-200 transition-colors hover:border-blue-300/30 hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10 disabled:hover:bg-white/[0.045]"
+                    >
+                      Next
+                    </button>
+                  </div>
+                )}
+
                 <button
                   onClick={handleBulkReset}
-                  className="rounded-2xl border border-white/10 bg-white/[0.045] px-6 py-3 text-[14.7px] font-bold text-slate-200 transition-all hover:border-blue-300/30 hover:bg-blue-500/10"
+                  className="mx-auto rounded-2xl border border-white/10 bg-white/[0.045] px-6 py-3 text-[14.7px] font-bold text-slate-200 transition-all hover:border-blue-300/30 hover:bg-blue-500/10"
                 >
                   Start New Batch
                 </button>

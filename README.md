@@ -45,6 +45,7 @@ This section lists what the app can actually do today, grouped by area.
 - Users can upload a JPG, JPEG, PNG, or PDF file. The file must be 5 MB or smaller, and a PDF can have at most 4 pages. Before uploading, the user must pick a document type: Tax Invoice or Delivery Challan. This choice matters because each document type has different fields to extract.
 - File validation errors are specific, not generic — the app tells the user exactly what went wrong (for example, "File size must be 5 MB or less" versus "File content does not match the selected file type") instead of a single catch-all error message.
 - Bulk Upload lets a user upload up to 5 files in one go, each with its own document type picked individually. The files are still processed strictly one at a time through the same single-slot queue described below — never in parallel — to keep server load safe. The user sees live, per-file progress (waiting / processing / done / failed) as each one finishes.
+- Once every file in a bulk batch has finished (successfully or not), a "View All Results" screen shows the whole batch at a glance — each file's document type, extracted number, extracted date, and status — with the same pagination pattern used on My Documents in case a batch grows large in the future. A successful file can be opened straight from this screen to edit, verify, or export it, exactly like any other document.
 - Only the top ~28% of the page (the header area) is sent through OCR. The number and date always live in this area on both document types. Everything else on the page — the item table, GST numbers, stamps, and signatures — is deliberately ignored. Skipping that extra content makes OCR faster and far more accurate, because there is less noisy text for it to get confused by.
 - The actual OCR engine is Tesseract.js. It runs inside its own separate child process (a second, isolated program that the main server starts and talks to), not inside the main server itself. This matters a lot: if OCR ever crashes, hangs, or gets stuck on a strange file, only that one child process dies — the main server and every other user's request keep working normally. There is also a timeout on this process, so a stuck OCR job can never hang forever.
 - PDFs are handled in two different ways depending on what kind of PDF they are:
@@ -58,8 +59,8 @@ This section lists what the app can actually do today, grouped by area.
 - If the server restarts while a document is still mid-processing, that document is automatically picked back up and re-queued when the server comes back online. Nothing gets silently lost.
 
 ### Document Management
-- The Dashboard shows every document a user has uploaded, plus quick counts by document type. The separate Documents page shows the same list but with pagination (loading documents a page at a time instead of all at once), which matters once a user has a lot of documents.
-- The Dashboard has a search bar for finding a document quickly: by document number (a partial match — typing part of the number is enough) or by date (picked with a native date picker). Searching redirects to the Documents page with the results filtered and still paginated, the same as browsing normally.
+- The Dashboard shows every document a user has uploaded, plus quick counts by document type. The separate My Documents page shows the same documents, but split into two clearly separate groups — Tax Invoice and Delivery Challan — shown as tabs, instead of one long mixed list. Each group has its own pagination (loading documents a page at a time instead of all at once, which matters once a user has a lot of documents) and its own search, entirely independent of the other group.
+- The Dashboard has a search bar for finding a document quickly: by document number (a partial match — typing part of the number is enough) or by date (picked with a native date picker). Searching redirects to My Documents with the results filtered and still paginated, scoped to whichever document-type group is selected there.
 - Each document has its own detail page. It shows the extracted fields, a confidence indicator for each one, and lets the user preview or download the original file they uploaded.
 - Any extracted field can be corrected by hand. The date field is checked for the right format before it is accepted. Every correction is written to a `Correction` record, so there is always a history of what was changed and when.
 - A document can be reprocessed. This re-runs the whole OCR-plus-AI pipeline again from the original file that is still stored — useful if the first attempt got a field wrong or missed something.
@@ -81,25 +82,18 @@ This section lists what the app can actually do today, grouped by area.
 - There is a forgot-password flow. It confirms the user's identity using their username and email together, and does not depend on sending an email or a one-time code.
 - There is also a normal change-password flow for a logged-in user. Both this and the forgot-password flow bump an internal counter called `tokenVersion` on that user's account. This immediately invalidates every other token that was issued before the change — so if someone else was still logged in with an old session (or an old token was stolen), that access is cut off the moment the password changes.
 - Login, signup, and forgot-password are all rate-limited, both per email address and per IP address. This slows down anyone trying to guess passwords or spam signups, but it is deliberately layered so a whole shared office or shared Wi-Fi network cannot get accidentally locked out just because one person on that network typed a wrong password.
-- The document chat feature is also rate-limited per user (20 messages every 10 minutes), which puts a cap on how much AI usage cost any single account can run up.
-- Every route that touches documents, chat, or admin data requires a valid, logged-in session. On top of that, every database query is scoped to the logged-in user, so a regular user can only ever see or change their own documents and workbooks — this is enforced at the database-query level, not just hidden in the interface.
+- Every route that touches documents or admin data requires a valid, logged-in session. On top of that, every database query is scoped to the logged-in user, so a regular user can only ever see or change their own documents and workbooks — this is enforced at the database-query level, not just hidden in the interface.
 - Standard security headers are added to every response using Helmet, and CORS (Cross-Origin Resource Sharing — the browser rule that controls which websites are allowed to call this API) is locked down to only the app's own known frontend address.
 - Error messages on signup, login, and forgot-password are written to be generic on purpose. For example, the app never says "that email doesn't exist" versus "wrong password" separately — because that difference could let an attacker figure out which email addresses already have accounts on the system.
 
 ### Admin Panel
 - The admin panel is a completely separate app (the `admin/` folder), with its own login page. Access is gated by checking that the logged-in account has `role: 'admin'` — and importantly, this check is done fresh against the database on every single request, not just trusted from whatever the login token happens to claim. This stops someone from tampering with their token to fake admin access.
-- **Users** — admins can see every user account (with pagination), edit a user's username, email, or role, and delete a user entirely. Deleting a user is a cascade delete: it also removes that user's documents, their stored files, their correction history, their chat history, their workbooks, their exported-row records, and their settings — nothing is left behind as orphaned data. As with document deletion, a confirmation popup is always shown first, to prevent an accidental delete.
+- **Users** — admins can see every user account (with pagination), edit a user's username, email, or role, and delete a user entirely. Deleting a user is a cascade delete: it also removes that user's documents, their stored files, their correction history, their workbooks, their exported-row records, and their settings — nothing is left behind as orphaned data. As with document deletion, a confirmation popup is always shown first, to prevent an accidental delete.
 - **Documents** — admins can see every document from every user (with the owner's name attached), and can correct any document's fields, the same way a regular user can correct their own.
 - **Workbooks** — admins can view and download any user's Excel workbooks, not just their own.
 - **Logs** — a paginated, filterable audit log. It can be filtered by the type of action (like login, signup, password change, document export, document deletion, or an admin action) and/or by which user it relates to.
 - **Dashboard** — a system-wide telemetry view: total number of users, total documents, total exports, the current OCR failure rate, a breakdown of documents by status and type, and how much activity happened in the last 24 hours and the last 7 days.
 - Every admin action that changes something (editing or deleting a user, correcting or deleting a document) is written to the audit log automatically, so there is always a record of what an admin did and when.
-
-### Chat
-- Each processed document has its own small chat assistant attached to it. A user can ask questions about that one document's extracted number and date.
-- The assistant is deliberately limited to only the data already stored for that document — it is instructed never to make up information that is not actually there.
-- Chat history is saved per document, but only the most recent 50 messages are kept, to keep things bounded.
-- Each assistant reply can be rated on a 1–10 scale, as simple feedback on how good the answer was.
 
 ### Dashboard / Analytics
 - The regular user dashboard shows document counts by type, a list of recent documents, and quick buttons to export or download the currently active workbook.
@@ -118,12 +112,12 @@ This section lists the real packages used in each part of the app, and what each
 | `sharp` | Crops and prepares images before they are sent to OCR (for example, cutting out just the top header section of a page). |
 | `@napi-rs/canvas` | Draws a PDF page onto an image, used only when a PDF has no real text layer and needs to be treated like a photo. |
 | `pdf-parse` / `pdfjs-dist` | Reads real, selectable text straight out of digital PDFs, and can also rebuild that text in the correct visual reading order. |
-| `groq-sdk` | Talks to the Groq API, which is what actually runs the AI model doing extraction and chat. |
+| `groq-sdk` | Talks to the Groq API, which is what actually runs the AI model doing extraction. |
 | `exceljs` | Creates and updates the `.xlsx` Excel workbook files. |
 | `multer` | Handles file uploads that come in as multipart form data (the standard way browsers send files). |
 | `bcryptjs` | Hashes passwords so the real password is never stored anywhere. |
 | `jsonwebtoken` | Creates and checks the JWT session tokens used for login. |
-| `express-rate-limit` | Limits how many times someone can hit login, signup, and chat endpoints in a given time window. |
+| `express-rate-limit` | Limits how many times someone can hit login and signup endpoints in a given time window. |
 | `helmet` | Adds a set of standard security-related HTTP headers to every response. |
 | `cors` | Controls which websites/origins are allowed to call this API from a browser. |
 | `dotenv` | Loads configuration values from a `.env` file into the running app (see the Setup section below). |
@@ -144,7 +138,7 @@ The admin app is built with the same base stack as the main frontend (React 19, 
 | `framer-motion` | Adds small page-transition animations when moving between admin pages. |
 
 ### Database
-- **MongoDB** (hosted on MongoDB Atlas in production) is where almost everything lives: user accounts, document records, workbook records, correction history, exported-row records, chat messages and feedback, app settings, and the audit log.
+- **MongoDB** (hosted on MongoDB Atlas in production) is where almost everything lives: user accounts, document records, workbook records, correction history, exported-row records, app settings, and the audit log.
 - **GridFS** is a feature built into MongoDB for storing files that are too large or awkward to fit neatly into a normal database document. It is used here to store the original uploaded files (the actual images and PDFs), separately from the smaller Document records that describe them.
 
 ## Architecture
@@ -266,7 +260,7 @@ Every route below lives behind the backend's Express app on port 5002 (or, in th
 - **Auth = Y** means the request must include a valid `Authorization: Bearer <token>` header — this is checked by the `requireAuth` middleware described in the Architecture section. Without it, the request is rejected before it ever reaches the route's own code.
 - **Admin = Y** means, on top of Auth, the logged-in account's role must be `admin` in the database right now — this is checked by the `isAdmin` middleware, always with a fresh database lookup.
 
-This applies to every `/api/documents/*` route, every `/api/documents/:id/chat/*` route, and every `/api/admin/*` route.
+This applies to every `/api/documents/*` route and every `/api/admin/*` route.
 
 ### Auth — `routes/auth.js` (mounted at `/api/auth`)
 
@@ -285,7 +279,7 @@ This applies to every `/api/documents/*` route, every `/api/documents/:id/chat/*
 | Method | Path | Auth | Admin | Description |
 |---|---|:-:|:-:|---|
 | POST | `/upload` | Y | N | Uploads one file (sent as multipart form data, in a field called `document`) along with a `documentType`. Stores the original file in GridFS, creates a new `Document` record, and adds the OCR/AI work to the processing queue. Returns the newly created document record right away — processing continues in the background. |
-| GET | `/` | Y | N | Lists the logged-in user's own documents. If a `?page=` query is given, it returns one page of results at a time (for the Documents page). If no `?page=` is given, it returns every document at once, plus a count of documents by type — this second shape is what the Dashboard uses to build its summary. |
+| GET | `/` | Y | N | Lists the logged-in user's own documents. If a `?page=` query is given, it returns one page of results at a time (for the My Documents page). If no `?page=` is given, it returns every document at once, plus a count of documents by type — this second shape is what the Dashboard uses to build its summary. `?documentType=` narrows the list to just "Tax Invoice" or "Delivery Challan" (used to show My Documents as two separate, independently paginated groups). `?number=`/`?date=` filter within whichever group is selected. |
 | GET | `/workbooks` | Y | N | Lists the logged-in user's own workbooks — both the currently active one and any archived ones — along with the name and year of whichever workbook is currently active. |
 | GET | `/workbook/download` | Y | N | Downloads a workbook file. It can be asked for by `?workbookId=` (a specific workbook), by `?year=` (that year's workbook for this user), or with no extra query at all, in which case it downloads whatever workbook is currently active. |
 | GET | `/export-history` | Y | N | Returns the current user's own exports, newest first. |
@@ -297,14 +291,6 @@ This applies to every `/api/documents/*` route, every `/api/documents/:id/chat/*
 | POST | `/new-excel-file` | Y | N | Starts a brand-new active workbook for the logged-in user, given a `{ filename }` in the request body. Whatever workbook was active before this is archived, not deleted. |
 | POST | `/:id/save` | Y | N | Appends this document's verified row into the correct month's worksheet inside the user's active workbook. If there is no active workbook yet, or the calendar year has just rolled over, this responds with a specific `409 NO_ACTIVE_WORKBOOK` or `409 NEED_NEW_WORKBOOK` error instead of failing silently, so the frontend knows exactly to ask the user for a workbook name first. On success, this is also logged to the audit trail as a `document_exported` event. |
 
-### Chat — `routes/chat.js` (mounted at `/api/documents/:id/chat`)
-
-| Method | Path | Auth | Admin | Description |
-|---|---|:-:|:-:|---|
-| GET | `/` | Y | N | Returns the chat history for one document (up to the most recent 50 messages), as long as the document belongs to the logged-in user. |
-| POST | `/` | Y | N | Sends a new question about a processed document and returns the assistant's reply. Limited to 20 messages every 10 minutes per user, to keep AI usage costs predictable. |
-| POST | `/:messageId/feedback` | Y | N | Rates one specific assistant reply on a 1–10 scale. Sending feedback again for the same message just updates the existing rating (an "upsert") instead of creating duplicates. |
-
 ### Admin — `routes/admin.js` (mounted at `/api/admin`, requires `role: admin`)
 
 | Method | Path | Auth | Admin | Description |
@@ -313,7 +299,7 @@ This applies to every `/api/documents/*` route, every `/api/documents/:id/chat/*
 | GET | `/users` | Y | Y | Returns a paginated list of every user account in the system. Password hashes are never included in the response. |
 | GET | `/users/:id` | Y | Y | Returns the full details of one specific user, by their id. |
 | PATCH | `/users/:id` | Y | Y | Lets an admin edit a user's username, email, and/or role. Logged to the audit trail. |
-| DELETE | `/users/:id` | Y | Y | Deletes a user and cascades that deletion across everything they own: their documents, stored files, corrections, chat history and feedback, workbooks (including the files on disk), exported-row records, and settings. An admin cannot delete their own account through this route. Logged to the audit trail. |
+| DELETE | `/users/:id` | Y | Y | Deletes a user and cascades that deletion across everything they own: their documents, stored files, corrections, workbooks (including the files on disk), exported-row records, and settings. An admin cannot delete their own account through this route. Logged to the audit trail. |
 | GET | `/documents` | Y | Y | Returns a paginated list of every document from every user, with the owning user's username and email attached to each one. |
 | PATCH | `/documents/:id` | Y | Y | Lets an admin correct a field on any user's document. Logged to the audit trail. |
 | DELETE | `/documents/:id` | Y | Y | Soft-deletes any user's document. Logged to the audit trail. |
@@ -411,19 +397,16 @@ OCR project AJ/
 │   │   ├── Settings.js
 │   │   ├── ExportedRow.js
 │   │   ├── Correction.js
-│   │   ├── ChatMessage.js
-│   │   ├── ChatFeedback.js
 │   │   └── AuditLog.js
 │   ├── routes/
 │   │   ├── auth.js
 │   │   ├── documents.js
-│   │   ├── chat.js
 │   │   └── admin.js
 │   ├── services/
 │   │   ├── ocr.js                  Header-crop OCR orchestrator (image/PDF routing)
 │   │   ├── ocr-worker.js           Tesseract child process
 │   │   ├── pdf-render-worker.js    PDF page → PNG child process
-│   │   ├── groq.js                 AI extraction + chat + date normalization
+│   │   ├── groq.js                 AI extraction + date normalization
 │   │   ├── excel.js                Workbook create/append (exceljs)
 │   │   ├── gridfs.js               GridFS upload/download/delete
 │   │   └── auditLog.js             logAction() helper
@@ -438,13 +421,12 @@ OCR project AJ/
 │   ├── src/
 │   │   ├── pages/                  Login, Signup, ForgotPassword, Dashboard,
 │   │   │                           Upload, Documents, DocumentDetail,
-│   │   │                           DocumentChat, ExportHistory, Profile, NotFound
+│   │   │                           ExportHistory, Profile, NotFound
 │   │   ├── components/             AppLayout, UploadCard, DocumentCard,
 │   │   │                           DocumentList, DocumentPreview,
 │   │   │                           DocumentDetailsPanel, ExtractedFieldsTable,
 │   │   │                           ExtractedTablesView, CorrectionModal,
-│   │   │                           AddRowModal, DocumentChat, ChatMessageBubble,
-│   │   │                           RequireAuth, ErrorMessage, LoadingState,
+│   │   │                           AddRowModal, RequireAuth, ErrorMessage, LoadingState,
 │   │   │                           ProcessingState, EmptyState, SummaryCard,
 │   │   │                           PasswordInput, ServerDownBanner
 │   │   ├── context/AuthContext.jsx
